@@ -4,6 +4,7 @@
 
 use crate::{math::Real, physics_transform::PhysicsTransformConfig, prelude::*};
 use bevy::{
+    curve::{Curve, Ease, FunctionCurve, Interval},
     ecs::{lifecycle::HookContext, world::DeferredWorld},
     prelude::*,
 };

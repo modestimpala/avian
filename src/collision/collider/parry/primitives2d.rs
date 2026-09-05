@@ -5,7 +5,8 @@ use crate::{
 
 use super::{Collider, IntoCollider, ToF32Precision};
 use bevy::prelude::{Deref, DerefMut};
-use bevy_math::{bounding::Bounded2d, prelude::*};
+use bevy::shape::{Bounded2d, prelude::*};
+use bevy_math::prelude::*;
 use parry::{
     mass_properties::MassProperties,
     math::Pose,

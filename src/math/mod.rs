@@ -18,6 +18,7 @@ mod double;
 pub use double::*;
 
 use approx::abs_diff_ne;
+use bevy::shape::prelude::*;
 use bevy_math::{prelude::*, *};
 use glam_matrix_extras::{SymmetricDMat2, SymmetricDMat3, SymmetricMat2, SymmetricMat3};
 

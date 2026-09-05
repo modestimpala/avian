@@ -75,14 +75,15 @@ bench = false
 
 [dependencies]
 avian_derive = { path = "../avian_derive", version = "0.2" }
-bevy = { version = "0.19.0", default-features = false, features = [
+bevy = { path = "../../../bevy", default-features = false, features = [
     "std",
     "bevy_log",
+    "bevy_curve",
 ] }
-bevy_math = { version = "0.19.0", features = ["approx"] }
-glam_matrix_extras = { version = "0.3", features = ["bevy_reflect"] }
-bevy_heavy = { version = "0.5" }
-bevy_transform_interpolation = { version = "0.5" }
+bevy_math = { path = "../../../bevy/crates/bevy_math", features = ["approx"] }
+glam_matrix_extras = { path = "../../../glam_matrix_extras", features = ["bevy_reflect"] }
+bevy_heavy = { path = "../../../bevy_heavy" }
+bevy_transform_interpolation = { path = "../../../bevy_transform_interpolation" }
 libm = { version = "0.2", optional = true }
 approx = "0.5"
 parry3d = { version = "0.27", optional = true }
@@ -99,8 +100,8 @@ disqualified = { version = "1.0" }
 
 [dev-dependencies]
 examples_common_3d = { path = "../examples_common_3d" }
-bevy = { version = "0.19.0", features = ["3d", "ui", "https", "bevy_feathers"] }
-bevy_heavy = { version = "0.5", features = ["approx"] }
+bevy = { path = "../../../bevy", features = ["3d", "ui", "https", "bevy_feathers"] }
+bevy_heavy = { path = "../../../bevy_heavy", features = ["approx"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 bevy_mod_debugdump = { version = "0.16" }
 rand = "0.10"
