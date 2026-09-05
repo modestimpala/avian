@@ -137,6 +137,7 @@ fn remove_ancestor_markers<C: Component>(
         if let Ok(children) = child_query.get(entity) {
             let keep_marker = ancestor_query
                 .iter_many(children)
+                .matched()
                 .any(|(parent_child, _has_c)| parent_child != entity);
             if keep_marker {
                 return;
@@ -158,6 +159,7 @@ fn remove_ancestor_markers<C: Component>(
             // or an entity that has `C`, but not the one that was removed.
             let keep_marker = ancestor_query
                 .iter_many(children)
+                .matched()
                 .any(|(child, has_c)| child != previous_parent || (has_c && child != entity));
 
             if keep_marker {

@@ -103,7 +103,6 @@ examples_common_3d = { path = "../examples_common_3d" }
 bevy = { path = "../../../bevy", features = ["3d", "ui", "https", "bevy_feathers"] }
 bevy_heavy = { path = "../../../bevy_heavy", features = ["approx"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-bevy_mod_debugdump = { version = "0.16" }
 rand = "0.10"
 
 [lints]
@@ -201,10 +200,6 @@ required-features = ["3d", "default-collider"]
 [[example]]
 name = "diagnostics"
 required-features = ["3d", "default-collider", "diagnostic_ui"]
-
-[[example]]
-name = "debugdump_3d"
-required-features = ["3d", "debug-plugin"]
 
 [[bench]]
 name = "velocity_projection"
