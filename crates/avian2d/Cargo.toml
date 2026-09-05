@@ -25,7 +25,7 @@ default = [
 f64 = []
 
 debug-plugin = ["bevy/bevy_gizmos", "bevy/bevy_render"]
-simd = ["parry2d?/simd-stable", "parry2d-f64?/simd-stable"]
+simd = ["parry2d?/simd8", "parry2d-f64?/simd8"]
 parallel = ["bevy/multi_threaded", "parry2d?/parallel", "parry2d-f64?/parallel"]
 enhanced-determinism = [
     "dep:libm",
@@ -84,8 +84,8 @@ bevy_heavy = { path = "../../../bevy_heavy" }
 bevy_transform_interpolation = { path = "../../../bevy_transform_interpolation" }
 libm = { version = "0.2", optional = true }
 approx = "0.5"
-parry2d = { version = "0.27", optional = true }
-parry2d-f64 = { version = "0.27", optional = true }
+parry2d = { version = "0.30.2", optional = true }
+parry2d-f64 = { version = "0.30.2", optional = true }
 obvhs = { version = "0.3" }
 serde = { version = "1", features = ["derive"], optional = true }
 derive_more = "2"
