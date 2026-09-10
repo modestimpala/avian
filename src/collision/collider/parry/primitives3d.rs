@@ -1,5 +1,5 @@
 use bevy::shape::{
-        Capsule3d, Cone, Cuboid, Cylinder, InfinitePlane3d, Line3d, Plane3d, Polyline3d, Segment3d,
+    Capsule3d, Cone, Cuboid, Cylinder, InfinitePlane3d, Line3d, Plane3d, Polyline3d, Segment3d,
     Sphere,
 };
 use bevy_math::{Quat, Vec3};

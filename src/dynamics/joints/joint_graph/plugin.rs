@@ -71,7 +71,9 @@ impl<T: Component + EntityConstraint<2>> Plugin for JointGraphPlugin<T> {
 
         // Add the joint back to the joint graph when `Disabled` is removed.
         app.add_observer(
-            add_joint_to_graph::<T, Remove<Disabled>,
+            add_joint_to_graph::<
+                T,
+                Remove<Disabled>,
                 (
                     With<JointComponentId>,
                     Or<(With<Disabled>, Without<Disabled>)>,
