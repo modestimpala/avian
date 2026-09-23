@@ -227,6 +227,56 @@ fn revolute_motor_respects_max_torque() {
     }
 }
 
+/// Tests that a motor whose torque limit is zero applies no torque, rather than an
+/// unlimited amount.
+#[test]
+fn revolute_motor_with_zero_max_torque_does_nothing() {
+    let mut app = create_app();
+    app.finish();
+
+    let anchor = app
+        .world_mut()
+        .spawn((RigidBody::Static, Position(RVector::ZERO)))
+        .id();
+
+    let dynamic = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Position(RVector::X * 2.0),
+            Mass(1.0),
+            #[cfg(feature = "2d")]
+            AngularInertia(1.0),
+            #[cfg(feature = "3d")]
+            AngularInertia::new(Vec3::splat(1.0)),
+        ))
+        .id();
+
+    app.world_mut().spawn(
+        RevoluteJoint::new(anchor, dynamic).with_motor(AngularMotor {
+            target_velocity: 10.0,
+            max_torque: 0.0,
+            motor_model: MotorModel::AccelerationBased {
+                stiffness: 0.0,
+                damping: 10.0,
+            },
+            ..default()
+        }),
+    );
+
+    app.update();
+    for _ in 0..(1.0 / TIMESTEP) as usize {
+        app.update();
+    }
+
+    let angular_velocity = app.world().entity(dynamic).get::<AngularVelocity>().unwrap();
+    #[cfg(feature = "2d")]
+    let speed = angular_velocity.0.abs();
+    #[cfg(feature = "3d")]
+    let speed = angular_velocity.0.length();
+    assert!(speed < 0.01, "a motor with no torque drove the joint at {speed}");
+}
+
 /// Tests that a position-targeting motor moves the joint towards the target position.
 #[test]
 fn revolute_motor_position_target() {

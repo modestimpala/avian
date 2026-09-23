@@ -329,8 +329,9 @@ impl PrismaticJoint {
         let delta_lagrange = correction / w_sum;
 
         // Clamp to limit instantaneous force per substep.
-        let delta_lagrange = if motor.max_force < f32::MAX && motor.max_force > 0.0 {
-            let max_delta = motor.max_force * dt * dt;
+        let delta_lagrange = if motor.max_force < f32::MAX {
+            // Zero is no torque at all, not no limit: a spent brake must let go.
+            let max_delta = motor.max_force.max(0.0) * dt * dt;
             delta_lagrange.clamp(-max_delta, max_delta)
         } else {
             delta_lagrange
