@@ -592,9 +592,18 @@ struct CcdImpact {
 /// If a time of impact is found, the body's accumulated motion is scaled down so it stops
 /// at the first impact, leaving the next frame's collision detection to resolve the contact.
 #[cfg(any(feature = "parry-f32", feature = "parry-f64"))]
+#[allow(clippy::too_many_arguments)]
 fn solve_continuous(
-    colliders: Query<(&Collider, &Position, &Rotation, Option<&CollisionLayers>)>,
+    colliders: Query<(
+        &Collider,
+        &Position,
+        &Rotation,
+        Option<&CollisionLayers>,
+        &ColliderAabb,
+        Option<&ActiveCollisionHooks>,
+    )>,
     ccd_query: Query<CcdBodyQuery>,
+    joint_graph: Res<crate::dynamics::joints::joint_graph::JointGraph>,
     mut bodies: ResMut<SolverBodies>,
     trees: Res<ColliderTrees>,
     mut contact_graph: ResMut<ContactGraph>,
@@ -728,11 +737,12 @@ fn solve_continuous(
 
         // Sweep each collider attached to the body.
         for collider_entity in fast.colliders {
-            let Ok((collider1, &collider_pos1, &collider_rot1, layers1)) =
+            let Ok((collider1, &collider_pos1, &collider_rot1, layers1, aabb1, hooks1)) =
                 colliders.get(collider_entity)
             else {
                 continue;
             };
+            let filtered1 = hooks1.is_some_and(|h| h.contains(ActiveCollisionHooks::FILTER_PAIRS));
 
             let shape1 = collider1.shape_scaled().as_ref();
 
@@ -796,6 +806,32 @@ fn solve_continuous(
 
                     let collider_entity2 = proxy.collider;
 
+                    // Skip bodies a joint keeps from colliding, as the broad phase does.
+                    if let Some(body2) = proxy.body
+                        && joint_graph
+                            .joints_between(fast.entity, body2)
+                            .any(|edge| edge.collision_disabled)
+                    {
+                        return true;
+                    }
+
+                    // Skip pairs a user filter has already turned away. The broad phase
+                    // offers every pair whose bounds overlap to the filter, and makes a
+                    // contact pair for each one it keeps, so two colliders that overlapped
+                    // at the start of the step with no pair between them were filtered out.
+                    // Sweeping them anyway pins a body against something it passes through:
+                    // they overlap at the start, so every step's time of impact is zero.
+                    if (filtered1 || proxy.flags.contains(ColliderTreeProxyFlags::CUSTOM_FILTER))
+                        && contact_graph
+                            .get(collider_entity, collider_entity2)
+                            .is_none()
+                        && colliders
+                            .get(collider_entity2)
+                            .is_ok_and(|(.., aabb2, _)| aabb1.intersects(aabb2))
+                    {
+                        return true;
+                    }
+
                     // If the narrow phase already has a touching contact for this pair,
                     // the discrete contact solver is responsible for it.
                     //
@@ -811,7 +847,7 @@ fn solve_continuous(
                     }
 
                     // Fetch the target collider and its start-of-frame pose.
-                    let Ok((collider2, &target_pos, &target_rot, _)) =
+                    let Ok((collider2, &target_pos, &target_rot, ..)) =
                         colliders.get(collider_entity2)
                     else {
                         return true;

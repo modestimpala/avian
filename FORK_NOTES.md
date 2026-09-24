@@ -72,3 +72,25 @@ waking it or anything after it.
 of its own, asleep. `WakeIslands` treats `SleepTimer` as optional. Regression test:
 `tests::a_body_spawned_asleep_has_an_island`.
 
+
+## Fixed: swept CCD pinned a body against a collider it was not allowed to touch
+
+**Symptom.** In shack a felled tree hinged on its stump twitched from side to side, and when
+the hinge let go the log hung in the air for a second or two with its velocity building as
+if in free fall, then dropped all at once. The stump and log start out overlapping along the
+cut, and contact between them is turned off: by `JointCollisionDisabled` on the hinge, and
+afterwards by a `CollisionHooks::filter_pairs` grace until they part.
+
+**Cause.** The broad phase skips pairs whose bodies share a joint with collisions disabled,
+and pairs a user filter rejects, but `solve_continuous` swept fast bodies against everything
+in the static and kinematic trees. A log tipping about a tall crown is "fast" at its top,
+so it was swept against its own stump, found a time of impact near zero every step, and had
+its motion scaled back to almost nothing while the solver kept its velocity.
+
+**Fix.** Swept CCD skips a pair whose bodies share a joint with `collision_disabled`, as the
+broad phase does. It also skips a pair where either collider has `FILTER_PAIRS`, the two
+overlapped at the start of the step, and there is no contact pair between them: the broad
+phase has already offered that pair to the filter, and it was turned away. (A filtered pair
+that has not yet overlapped is still swept; the filter is not run from inside CCD.) There's
+no standalone Avian test: a plain body did not reproduce the pinning. The regression test
+is shack's `world::timber::falls::trees_fall_cleanly`, which fails without this fix.
