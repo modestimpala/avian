@@ -1054,7 +1054,7 @@ impl PhysicsIslands {
         &mut self,
         island_id: IslandId,
         body_islands: &mut Query<&mut BodyIslandNode, Or<(With<Disabled>, Without<Disabled>)>>,
-        body_colliders: &Query<&RigidBodyColliders>,
+        _body_colliders: &Query<&RigidBodyColliders>,
         contact_graph: &ContactGraph,
         joint_graph: &JointGraph,
     ) {
@@ -1102,6 +1102,12 @@ impl PhysicsIslands {
 
         debug_assert_eq!(body_ids.len(), body_count as usize);
 
+        // Snapshot adjacency from the island's actual constraints. Collider ownership
+        // can already have changed during detachment, before old contacts are retired.
+        // Walking today's RigidBodyColliders can then omit old edges, leaving orphaned
+        // nodes whose links point into the rebuilt lists.
+        let mut contact_adjacency =
+            bevy::platform::collections::HashMap::<Entity, Vec<(ContactId, Entity)>>::default();
         // Clear visited flags for contacts.
         let mut next_contact = island.head_contact;
         while let Some(contact_id) = next_contact {
@@ -1111,6 +1117,18 @@ impl PhysicsIslands {
 
             // Clear visited flag.
             contact_island.is_visited = false;
+            if let Some(edge) = contact_graph.get_edge_by_id(contact_id)
+                && let (Some(a), Some(b)) = (edge.body1, edge.body2)
+            {
+                contact_adjacency
+                    .entry(a)
+                    .or_default()
+                    .push((contact_id, b));
+                contact_adjacency
+                    .entry(b)
+                    .or_default()
+                    .push((contact_id, a));
+            }
 
             next_contact = contact_island.next;
         }
@@ -1176,43 +1194,19 @@ impl PhysicsIslands {
 
                 island.body_count += 1;
 
-                // Traverse the contacts of the body.
-                // TODO: Avoid collecting here and only iterate once.
-                let contact_edges: Vec<(ContactId, Entity)> = body_colliders
-                    .get(body)
-                    .iter()
-                    .flat_map(|colliders| {
-                        colliders.into_iter().flat_map(|collider| {
-                            contact_graph
-                                .contact_edges_with(collider)
-                                .filter_map(|contact_edge| {
-                                    if self
-                                        .contact_node(contact_edge.id)
-                                        .is_none_or(|node| node.is_visited)
-                                    {
-                                        // Only consider contacts that generate constraints
-                                        // and have not been visited yet.
-                                        return None;
-                                    }
-
-                                    // TODO: Remove this once the contact graph is reworked to only have rigid body collisions.
-                                    let (Some(body1), Some(body2)) =
-                                        (contact_edge.body1, contact_edge.body2)
-                                    else {
-                                        // Only consider contacts with two bodies.
-                                        return None;
-                                    };
-
-                                    Some((
-                                        contact_edge.id,
-                                        if body1 == body { body2 } else { body1 },
-                                    ))
-                                })
-                        })
-                    })
-                    .collect();
-
-                for (contact_id, other_body) in contact_edges {
+                // Traverse each original constraint once, even if a reparented
+                // collider no longer appears in this body's collider list.
+                for &(contact_id, other_body) in contact_adjacency
+                    .get(&body)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    if self
+                        .contact_node(contact_id)
+                        .is_none_or(|node| node.is_visited)
+                    {
+                        continue;
+                    }
                     // Maybe add the other body to the stack.
                     if let Ok(mut other_body_island) = body_islands.get_mut(other_body)
                         && !other_body_island.is_visited
