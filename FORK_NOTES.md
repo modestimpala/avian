@@ -53,3 +53,22 @@ a limit of `0.0` left the motor unclamped. A brake whose strength had run out, l
 zero, instead held its joint rigid. Fixed in the XPBD revolute and prismatic joint solvers:
 zero now means no torque or force, and a negative limit is treated as zero. Test:
 `revolute_motor_with_zero_max_torque_does_nothing`.
+
+## Fixed: a body spawned already asleep crashed the first contact made with it
+
+**Symptom.** Spawning a dynamic body with `Sleeping` in its bundle panicked with "Neither
+body … nor … is in an island" as soon as anything touched it (shack's bench tools, spawned
+asleep, crashed at startup). Once the panic was avoided, a body landing on it passed
+straight through, and the sleeping body never woke.
+
+**Cause.** Islands are joined through `BodyIslandNode`, which is required by
+`SolverBodyIndex`, and a body only gets a solver body when it is awake. A body inserted
+already asleep therefore had no island, so merging islands for its first contact found
+neither body. And `WakeIslands` walked an island's bodies with a query requiring
+`SleepTimer` (also required by `SolverBodyIndex`), so it stopped at such a body without
+waking it or anything after it.
+
+**Fix.** `IslandPlugin` gives a dynamic or kinematic body inserted with `Sleeping` an island
+of its own, asleep. `WakeIslands` treats `SleepTimer` as optional. Regression test:
+`tests::a_body_spawned_asleep_has_an_island`.
+

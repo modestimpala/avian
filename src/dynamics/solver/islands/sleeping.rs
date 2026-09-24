@@ -453,9 +453,11 @@ impl Command for SleepIslands {
 #[derive(Resource)]
 struct CachedIslandWakingSystemState(
     SystemState<(
+        // A body put to sleep by the simulation has a timer; one spawned asleep has none
+        // until it first wakes, and must not stop the walk through its island.
         SQuery<(
             &'static BodyIslandNode,
-            &'static mut SleepTimer,
+            Option<&'static mut SleepTimer>,
             Option<&'static RigidBodyColliders>,
         )>,
         SResMut<PhysicsIslands>,
@@ -514,7 +516,7 @@ impl Command for WakeIslands {
                     let mut body = island.head_body;
 
                     while let Some(entity) = body {
-                        let Ok((body_island, mut sleep_timer, colliders)) = bodies.get_mut(entity)
+                        let Ok((body_island, sleep_timer, colliders)) = bodies.get_mut(entity)
                         else {
                             body = None;
                             continue;
@@ -539,7 +541,9 @@ impl Command for WakeIslands {
 
                         bodies_to_wake.push(entity);
                         body = body_island.next;
-                        sleep_timer.0 = 0.0;
+                        if let Some(mut sleep_timer) = sleep_timer {
+                            sleep_timer.0 = 0.0;
+                        }
                     }
                 }
             }

@@ -213,3 +213,54 @@ fn no_ambiguity_errors() {
     .finish();
     app.update();
 }
+
+/// A body spawned already asleep has an island of its own, asleep too: without one, the
+/// first contact made with it has no island to merge into, and a body landing on it wakes it.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_body_spawned_asleep_has_an_island() {
+    use crate::dynamics::solver::islands::{BodyIslandNode, PhysicsIslands};
+
+    let mut app = create_app();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(10.0, 1.0, 10.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+    ));
+    let resting = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 1.0, 1.0),
+            Transform::from_xyz(0.0, 0.5, 0.0),
+            Sleeping,
+        ))
+        .id();
+    app.update();
+    let island = app
+        .world()
+        .get::<BodyIslandNode>(resting)
+        .expect("a body spawned asleep is in an island")
+        .island_id();
+    assert!(
+        app.world()
+            .resource::<PhysicsIslands>()
+            .get(island)
+            .is_some_and(|island| island.is_sleeping()),
+        "and its island is asleep"
+    );
+    let falling = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 1.0, 1.0),
+            Transform::from_xyz(0.0, 2.0, 0.0),
+        ))
+        .id();
+    for _ in 0..120 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    let landed = app.world().get::<Position>(falling).unwrap().y;
+    assert!(landed > 1.2, "the falling body came to rest on the sleeping one, at {landed}");
+    assert!(app.world().get::<BodyIslandNode>(resting).is_some());
+}

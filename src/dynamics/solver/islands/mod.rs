@@ -64,7 +64,7 @@ use crate::{
     },
     prelude::{
         ContactGraph, PhysicsSchedule, RigidBody, RigidBodyColliders, RigidBodyDisabled,
-        SolverSystems,
+        Sleeping, SolverSystems,
     },
 };
 
@@ -116,6 +116,45 @@ impl Plugin for IslandPlugin {
                         .entity(trigger.entity)
                         .try_insert(BodyIslandNode::default());
                 }
+            },
+        );
+
+        // Give a dynamic or kinematic body inserted already asleep an island of its own,
+        // asleep too. It has no solver body to require one, so otherwise the first contact
+        // made with it would find no island to merge into. Waking it later removes
+        // `Sleeping`, which adds its solver body as for any body put to sleep.
+        app.add_observer(
+            |trigger: On<Insert<RigidBody>>,
+             query: Query<
+                &RigidBody,
+                (
+                    With<Sleeping>,
+                    Without<BodyIslandNode>,
+                    Without<RigidBodyDisabled>,
+                ),
+            >,
+             mut commands: Commands| {
+                let entity = trigger.entity;
+                if !query
+                    .get(entity)
+                    .is_ok_and(|rb| rb.is_dynamic() || rb.is_kinematic())
+                {
+                    return;
+                }
+                commands.queue(move |world: &mut World| {
+                    let Ok(mut body) = world.get_entity_mut(entity) else {
+                        return;
+                    };
+                    if body.contains::<BodyIslandNode>() || !body.contains::<Sleeping>() {
+                        return;
+                    }
+                    body.insert(BodyIslandNode::default());
+                    let island_id = body.get::<BodyIslandNode>().unwrap().island_id;
+                    if let Some(island) = world.resource_mut::<PhysicsIslands>().get_mut(island_id)
+                    {
+                        island.is_sleeping = true;
+                    }
+                });
             },
         );
 
