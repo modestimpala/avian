@@ -269,12 +269,19 @@ fn revolute_motor_with_zero_max_torque_does_nothing() {
         app.update();
     }
 
-    let angular_velocity = app.world().entity(dynamic).get::<AngularVelocity>().unwrap();
+    let angular_velocity = app
+        .world()
+        .entity(dynamic)
+        .get::<AngularVelocity>()
+        .unwrap();
     #[cfg(feature = "2d")]
     let speed = angular_velocity.0.abs();
     #[cfg(feature = "3d")]
     let speed = angular_velocity.0.length();
-    assert!(speed < 0.01, "a motor with no torque drove the joint at {speed}");
+    assert!(
+        speed < 0.01,
+        "a motor with no torque drove the joint at {speed}"
+    );
 }
 
 /// Tests that a position-targeting motor moves the joint towards the target position.
