@@ -1063,15 +1063,19 @@ fn update_tree(
         while bits != 0 {
             let trailing_zeros = bits.trailing_zeros();
             let proxy_id = ProxyId::new(i as u32 * 64 + trailing_zeros);
-            let proxy = &mut tree.proxies[proxy_id.index()];
+            // Clear the least significant set bit
+            bits &= bits - 1;
+
+            // A collider can be marked as moved and have its proxy removed in the same step
+            // (a body cut apart, or its collider replaced): there is nothing left to move.
+            let Some(proxy) = tree.proxies.get_mut(proxy_id.index()) else {
+                continue;
+            };
             let entity = proxy.collider;
 
-            let enlarged_aabb = aabbs.get(entity).unwrap_or_else(|_| {
-                panic!(
-                    "EnlargedAabb missing for moved collider entity {:?}",
-                    entity
-                )
-            });
+            let Ok(enlarged_aabb) = aabbs.get(entity) else {
+                continue;
+            };
 
             // Update the proxy's AABB.
             update_proxy_fn(tree, proxy_id, Aabb::from(enlarged_aabb.get()));
@@ -1081,9 +1085,6 @@ fn update_tree(
             if moved_proxies.insert(proxy_key) {
                 tree.moved_proxies.push(proxy_id);
             }
-
-            // Clear the least significant set bit
-            bits &= bits - 1;
         }
     }
 }

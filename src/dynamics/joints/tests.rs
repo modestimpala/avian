@@ -908,3 +908,106 @@ fn prismatic_motor_combined_position_velocity() {
         displacement
     );
 }
+
+/// Bodies tied round one knot, as a tipi's tops are, with sleep and removals in the same
+/// frames a game makes them: the island's joint list must stay whole.
+#[cfg(feature = "3d")]
+#[test]
+fn joints_round_one_knot_survive_sleeping_and_removal_in_any_order() {
+    for variant in 0..8 {
+        let mut app = create_app();
+        app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 1.0, 20.0),
+            Transform::from_xyz(0.0, -0.5, 0.0),
+        ));
+        app.finish();
+        let knot = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::sphere(0.02),
+                CollisionLayers::NONE,
+                LockedAxes::ROTATION_LOCKED,
+                Transform::from_xyz(0.0, 0.5, 0.0),
+            ))
+            .id();
+        let mut sticks = Vec::new();
+        let mut joints = Vec::new();
+        for i in 0..3 {
+            let angle = i as f32 * core::f32::consts::TAU / 3.0;
+            let out = Vec3::new(angle.cos(), 0.0, angle.sin());
+            let top = Vec3::new(0.0, 0.5, 0.0) + out * 0.03;
+            let butt = out * 0.25;
+            let along = (top - butt).normalize();
+            let stick = app
+                .world_mut()
+                .spawn((
+                    RigidBody::Dynamic,
+                    Collider::capsule(0.015, top.distance(butt)),
+                    Transform::from_translation((top + butt) * 0.5)
+                        .with_rotation(Quat::from_rotation_arc(Vec3::Y, along)),
+                ))
+                .id();
+            let joint = app
+                .world_mut()
+                .spawn((
+                    SphericalJoint::new(knot, stick)
+                        .with_local_anchor1(top - Vec3::new(0.0, 0.5, 0.0))
+                        .with_local_anchor2(Vec3::Y * top.distance(butt) * 0.5),
+                    JointCollisionDisabled,
+                ))
+                .id();
+            sticks.push(stick);
+            joints.push(joint);
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+        // Put some to sleep by hand, as a game resting still bodies does.
+        if variant & 1 == 1 {
+            for &s in &sticks {
+                app.world_mut().entity_mut(s).insert(Sleeping);
+            }
+            app.update();
+        }
+        if variant & 2 == 2 {
+            app.world_mut().entity_mut(sticks[0]).remove::<Sleeping>();
+        }
+        // Take the joints away: one at a time, or all with the knot at once.
+        if variant & 4 == 4 {
+            // The knot and its joints go in one frame, and a body is sent to sleep in that
+            // same frame: its island is split while the joints are gone from the graph but
+            // still linked in the island.
+            for &j in &joints {
+                app.world_mut().despawn(j);
+            }
+            app.world_mut().despawn(knot);
+            app.world_mut().entity_mut(sticks[1]).remove::<Sleeping>();
+            app.world_mut().entity_mut(sticks[2]).insert(Sleeping);
+            app.update();
+        } else {
+            for &j in &joints {
+                app.world_mut().despawn(j);
+                app.update();
+            }
+            app.world_mut().despawn(knot);
+        }
+        // And new joints made right away, reusing what was freed.
+        let knot = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::sphere(0.02),
+                CollisionLayers::NONE,
+            ))
+            .id();
+        for &s in &sticks {
+            app.world_mut().spawn(SphericalJoint::new(knot, s));
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+    }
+}

@@ -236,6 +236,8 @@ pub fn apply_joint_graph_changes(
 
     let mut islands_to_wake: Vec<IslandId> = Vec::new();
 
+    #[cfg(feature = "validate")]
+    islands.check_joint_lists("before joint changes");
     for &change in changes.read() {
         match change {
             JointGraphChange::Added(joint_id) => {
@@ -267,6 +269,8 @@ pub fn apply_joint_graph_changes(
                 }
             }
         }
+        #[cfg(feature = "validate")]
+        islands.check_joint_lists(&format!("after {change:?}"));
     }
 
     if !islands_to_wake.is_empty() {

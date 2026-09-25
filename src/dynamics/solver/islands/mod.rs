@@ -63,8 +63,8 @@ use crate::{
         solver::solver_body::SolverBodyIndex,
     },
     prelude::{
-        ContactGraph, PhysicsSchedule, RigidBody, RigidBodyColliders, RigidBodyDisabled,
-        Sleeping, SolverSystems,
+        ContactGraph, PhysicsSchedule, RigidBody, RigidBodyColliders, RigidBodyDisabled, Sleeping,
+        SolverSystems,
     },
 };
 
@@ -477,6 +477,55 @@ pub struct PhysicsIslands {
 }
 
 impl PhysicsIslands {
+    /// Walks every island's joint list and panics, naming `when`, at the first joint whose
+    /// links do not agree: its island, its back link, or the island's count and tail.
+    #[cfg(feature = "validate")]
+    pub fn check_joint_lists(&self, when: &str) {
+        for island in self.iter() {
+            let mut previous = None;
+            let mut count = 0;
+            let mut next = island.head_joint;
+            while let Some(joint) = next {
+                let node = self.joint_nodes[joint.0 as usize]
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{when}: joint {joint:?} in island {:?} has no node",
+                            island.id
+                        )
+                    });
+                assert_eq!(
+                    node.island_id, island.id,
+                    "{when}: joint {joint:?} listed in island {:?} but says {:?}",
+                    island.id, node.island_id
+                );
+                assert_eq!(
+                    node.prev, previous,
+                    "{when}: joint {joint:?} in island {:?} links back wrong",
+                    island.id
+                );
+                previous = Some(joint);
+                count += 1;
+                assert!(
+                    count <= 1 + island.joint_count,
+                    "{when}: island {:?} joint list loops",
+                    island.id
+                );
+                next = node.next;
+            }
+            assert_eq!(
+                island.tail_joint, previous,
+                "{when}: island {:?} tail wrong",
+                island.id
+            );
+            assert_eq!(
+                island.joint_count, count,
+                "{when}: island {:?} count wrong",
+                island.id
+            );
+        }
+    }
+
     /// Creates a new [`PhysicsIsland`], calling the given `init` function before pushing the island to the list.
     #[inline]
     pub fn create_island_with<F>(&mut self, init: F) -> IslandId
@@ -1109,6 +1158,12 @@ impl PhysicsIslands {
             return;
         }
 
+        // The island being split. Only its own joints are relinked into the new islands: a
+        // joint of one of its bodies can belong to another island (one body joined before
+        // the other had an island of its own), and relinking it here would leave it in two
+        // lists at once.
+        let splitting = island_id;
+
         #[cfg(feature = "validate")]
         {
             // Validate the island before splitting.
@@ -1147,9 +1202,14 @@ impl PhysicsIslands {
         // nodes whose links point into the rebuilt lists.
         let mut contact_adjacency =
             bevy::platform::collections::HashMap::<Entity, Vec<(ContactId, Entity)>>::default();
+        // Every constraint the island held, so any the split cannot reach can be unlinked
+        // afterwards instead of left pointing into the rebuilt lists.
+        let mut old_contacts = Vec::with_capacity(island.contact_count as usize);
+        let mut old_joints = Vec::with_capacity(island.joint_count as usize);
         // Clear visited flags for contacts.
         let mut next_contact = island.head_contact;
         while let Some(contact_id) = next_contact {
+            old_contacts.push(contact_id);
             let contact_island = self.contact_nodes[contact_id.0 as usize]
                 .as_mut()
                 .unwrap_or_else(|| panic!("Contact {contact_id:?} has no island"));
@@ -1175,6 +1235,7 @@ impl PhysicsIslands {
         // Clear visited flags for joints.
         let mut next_joint = island.head_joint;
         while let Some(joint_id) = next_joint {
+            old_joints.push(joint_id);
             let joint_island = self.joint_nodes[joint_id.0 as usize]
                 .as_mut()
                 .unwrap_or_else(|| panic!("Joint {joint_id:?} has no island"));
@@ -1288,9 +1349,9 @@ impl PhysicsIslands {
                     .filter_map(|joint_edge| {
                         if self
                             .joint_node(joint_edge.id)
-                            .is_none_or(|node| node.is_visited)
+                            .is_none_or(|node| node.is_visited || node.island_id != splitting)
                         {
-                            // Only consider joints that have not been visited yet.
+                            // Only this island's own joints, not yet visited.
                             return None;
                         }
 
@@ -1356,6 +1417,28 @@ impl PhysicsIslands {
             // Add the new island to the list.
             self.islands.push(island);
         }
+
+        // Constraints the split could not reach (a body of theirs is gone, or their edge
+        // already left its graph) are in no island now: unlink them, so their removal,
+        // when it comes, finds nothing to unlink rather than links into the new lists.
+        for contact_id in old_contacts {
+            if self.contact_nodes[contact_id.0 as usize]
+                .as_ref()
+                .is_some_and(|node| !node.is_visited)
+            {
+                self.contact_nodes[contact_id.0 as usize] = None;
+            }
+        }
+        for joint_id in old_joints {
+            if self.joint_nodes[joint_id.0 as usize]
+                .as_ref()
+                .is_some_and(|node| !node.is_visited)
+            {
+                self.joint_nodes[joint_id.0 as usize] = None;
+            }
+        }
+        #[cfg(feature = "validate")]
+        self.check_joint_lists("after a split");
     }
 }
 
