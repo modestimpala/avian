@@ -589,6 +589,19 @@ pub struct SolverConfig {
     ///
     /// Default: `1`
     pub restitution_iterations: usize,
+
+    /// The largest mass ratio two dynamic bodies resting on one another are solved with.
+    ///
+    /// An iterative solver passes weight down through a body much lighter than what rests
+    /// on it poorly: the light body is squeezed, the stack jitters and never sleeps. Where
+    /// two bodies' masses differ by more than this, the lighter one counts, in that contact
+    /// alone, as only this many times lighter. Its mass elsewhere is unchanged, and so is
+    /// the contact when the bodies meet faster than the
+    /// [`restitution_threshold`](Self::restitution_threshold): in an impact each takes its
+    /// true share. Momentum between a resting pair is not conserved exactly.
+    ///
+    /// Default: `f32::INFINITY` (no limit)
+    pub max_mass_ratio: f32,
 }
 
 impl Default for SolverConfig {
@@ -600,6 +613,7 @@ impl Default for SolverConfig {
             warm_start_coefficient: 1.0,
             restitution_threshold: 1.0,
             restitution_iterations: 1,
+            max_mass_ratio: f32::INFINITY,
         }
     }
 }
@@ -671,6 +685,8 @@ fn prepare_contact_constraints(
     solver_bodies: Res<SolverBodies>,
     narrow_phase_config: Res<NarrowPhaseConfig>,
     contact_softness: Res<ContactSoftnessCoefficients>,
+    solver_config: Res<SolverConfig>,
+    length_unit: Res<PhysicsLengthUnit>,
 ) {
     let start = crate::utils::Instant::now();
 
@@ -748,6 +764,8 @@ fn prepare_contact_constraints(
                 manifold_index,
                 narrow_phase_config.match_contacts,
                 &contact_softness,
+                solver_config.max_mass_ratio,
+                solver_config.restitution_threshold * length_unit.0,
             );
 
             if !constraint.points.is_empty() {

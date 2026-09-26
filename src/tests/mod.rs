@@ -261,6 +261,83 @@ fn a_body_spawned_asleep_has_an_island() {
         tick_app(&mut app, 1.0 / 60.0);
     }
     let landed = app.world().get::<Position>(falling).unwrap().y;
-    assert!(landed > 1.2, "the falling body came to rest on the sleeping one, at {landed}");
+    assert!(
+        landed > 1.2,
+        "the falling body came to rest on the sleeping one, at {landed}"
+    );
     assert!(app.world().get::<BodyIslandNode>(resting).is_some());
+}
+
+/// A heavy slab laid across light rods on the ground: whether it has come to rest, asleep,
+/// after `seconds`, and how fast anything was still going over the last second.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn slab_on_rods(max_mass_ratio: f32, seconds: f32) -> (bool, f32) {
+    let mut app = create_app();
+    app.insert_resource(crate::dynamics::solver::SolverConfig {
+        max_mass_ratio,
+        ..default()
+    });
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(10.0, 1.0, 10.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+    ));
+    let mut bodies = Vec::new();
+    // Rods 3 cm through and 1.2 m long, near a kilogram each, crossing under the slab.
+    for (i, x) in [-0.35, 0.0, 0.35].into_iter().enumerate() {
+        let turn = Quat::from_rotation_y(0.2 * i as f32 - 0.2);
+        bodies.push(
+            app.world_mut()
+                .spawn((
+                    RigidBody::Dynamic,
+                    Collider::cuboid(0.03, 0.03, 1.2),
+                    Transform::from_xyz(x, 0.015, 0.0).with_rotation(turn),
+                ))
+                .id(),
+        );
+    }
+    // A slab of 360 kg dropped a hand onto them.
+    bodies.push(
+        app.world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::cuboid(1.0, 0.3, 1.2),
+                Transform::from_xyz(0.02, 0.25, 0.0).with_rotation(Quat::from_rotation_z(0.05)),
+            ))
+            .id(),
+    );
+    let steps = (seconds * 60.0) as usize;
+    let mut fastest = 0.0f32;
+    for step in 0..steps {
+        tick_app(&mut app, 1.0 / 60.0);
+        if step + 60 >= steps {
+            for &b in &bodies {
+                let v = app.world().get::<LinearVelocity>(b).unwrap();
+                let w = app.world().get::<AngularVelocity>(b).unwrap();
+                #[allow(
+                    clippy::unnecessary_cast,
+                    reason = "velocities are f64 with that feature"
+                )]
+                let (v, w) = (v.length() as f32, w.length() as f32);
+                fastest = fastest.max(v).max(w * 0.1);
+            }
+        }
+    }
+    let asleep = bodies
+        .iter()
+        .all(|&b| app.world().get::<Sleeping>(b).is_some());
+    (asleep, fastest)
+}
+
+/// Weight passed down through a much lighter body: with the mass ratio limited, a slab over
+/// light rods settles and sleeps.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_heavy_slab_on_light_rods_settles_with_the_mass_ratio_limited() {
+    let (asleep, fastest) = slab_on_rods(5.0, 8.0);
+    assert!(asleep, "never slept; still going {fastest} m/s");
+    if std::env::var("AVIAN_RATIO_REFERENCE").is_ok() {
+        let unlimited = slab_on_rods(f32::INFINITY, 8.0);
+        eprintln!("limited: {:?}, unlimited: {unlimited:?}", (asleep, fastest));
+    }
 }

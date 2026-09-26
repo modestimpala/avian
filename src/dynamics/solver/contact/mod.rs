@@ -67,6 +67,13 @@ pub struct ContactConstraint {
     /// If the relative dominance is positive, the first body is dominant
     /// and is considered to have infinite mass.
     pub relative_dominance: i16,
+    /// How much of each body's inverse mass and inverse angular inertia the contact uses,
+    /// in `(0, 1]`: below one for the lighter of two dynamic bodies resting on one another
+    /// whose masses differ by more than [`SolverConfig::max_mass_ratio`], so it takes the
+    /// heavier one's weight as a body at most that many times lighter would.
+    pub inv_mass_scale1: f32,
+    /// See [`ContactConstraint::inv_mass_scale1`].
+    pub inv_mass_scale2: f32,
     /// The combined coefficient of dynamic [friction](Friction) of the bodies.
     pub friction: f32,
     /// The combined coefficient of [restitution](Restitution) of the bodies.
@@ -115,17 +122,30 @@ impl ContactConstraint {
         manifold_index: usize,
         warm_start_enabled: bool,
         softness: &ContactSoftnessCoefficients,
+        max_mass_ratio: f32,
+        resting_speed: f32,
     ) -> Self {
         // Compute the relative dominance of the bodies.
         let relative_dominance = inertia1.dominance() - inertia2.dominance();
 
+        // Only for bodies resting on one another: in an impact each takes its true share.
+        let resting = manifold
+            .points
+            .iter()
+            .all(|point| point.normal_speed > -resting_speed);
+        let (inv_mass_scale1, inv_mass_scale2) = if relative_dominance == 0 && resting {
+            inv_mass_scales(inertia1, inertia2, max_mass_ratio)
+        } else {
+            (1.0, 1.0)
+        };
+
         // Compute the inverse mass and angular inertia, taking into account the relative dominance.
         let (inv_mass1, i1, inv_mass2, i2) = match relative_dominance.cmp(&0) {
             Ordering::Equal => (
-                inertia1.effective_inv_mass(),
-                inertia1.effective_inv_angular_inertia(),
-                inertia2.effective_inv_mass(),
-                inertia2.effective_inv_angular_inertia(),
+                inertia1.effective_inv_mass() * inv_mass_scale1,
+                inertia1.effective_inv_angular_inertia() * inv_mass_scale1,
+                inertia2.effective_inv_mass() * inv_mass_scale2,
+                inertia2.effective_inv_angular_inertia() * inv_mass_scale2,
             ),
             Ordering::Greater => (
                 Vector::ZERO,
@@ -195,6 +215,8 @@ impl ContactConstraint {
             body_index1,
             body_index2,
             relative_dominance,
+            inv_mass_scale1,
+            inv_mass_scale2,
             friction: manifold.friction,
             restitution: manifold.restitution,
             #[cfg(feature = "2d")]
@@ -219,10 +241,10 @@ impl ContactConstraint {
         inertia2: &SolverBodyInertia,
         warm_start_coefficient: f32,
     ) {
-        let inv_mass1 = inertia1.effective_inv_mass();
-        let inv_mass2 = inertia2.effective_inv_mass();
-        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
-        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+        let inv_mass1 = inertia1.effective_inv_mass() * self.inv_mass_scale1;
+        let inv_mass2 = inertia2.effective_inv_mass() * self.inv_mass_scale2;
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia() * self.inv_mass_scale1;
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia() * self.inv_mass_scale2;
 
         let tangent_directions = self.tangent_directions();
 
@@ -264,10 +286,10 @@ impl ContactConstraint {
         delta_secs: f32,
         max_overlap_solve_speed: f32,
     ) {
-        let inv_mass1 = inertia1.effective_inv_mass();
-        let inv_mass2 = inertia2.effective_inv_mass();
-        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
-        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+        let inv_mass1 = inertia1.effective_inv_mass() * self.inv_mass_scale1;
+        let inv_mass2 = inertia2.effective_inv_mass() * self.inv_mass_scale2;
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia() * self.inv_mass_scale1;
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia() * self.inv_mass_scale2;
 
         let delta_translation = body2.delta_position - body1.delta_position;
 
@@ -355,10 +377,10 @@ impl ContactConstraint {
         inertia2: &SolverBodyInertia,
         threshold: f32,
     ) {
-        let inv_mass1 = inertia1.effective_inv_mass();
-        let inv_mass2 = inertia2.effective_inv_mass();
-        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
-        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+        let inv_mass1 = inertia1.effective_inv_mass() * self.inv_mass_scale1;
+        let inv_mass2 = inertia2.effective_inv_mass() * self.inv_mass_scale2;
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia() * self.inv_mass_scale1;
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia() * self.inv_mass_scale2;
 
         for point in self.points.iter_mut() {
             // Skip restitution for speeds below the threshold.
@@ -410,6 +432,34 @@ impl ContactConstraint {
             // Note: The order is flipped here so that we use `-normal`.
             [self.tangent1, self.tangent1.cross(self.normal)]
         }
+    }
+}
+
+/// The inverse mass scales for two dynamic bodies in contact: the lighter one's shrunk so
+/// that it counts as at most `max_mass_ratio` times lighter than the other, as a contact
+/// modification rather than a change to the body. An iterative solver passes a heavy body's
+/// weight down through a much lighter one poorly: a log resting on a twig jitters and never
+/// sleeps. Momentum between the pair is no longer conserved exactly in such a contact.
+fn inv_mass_scales(
+    inertia1: &SolverBodyInertia,
+    inertia2: &SolverBodyInertia,
+    max_mass_ratio: f32,
+) -> (f32, f32) {
+    if !max_mass_ratio.is_finite() {
+        return (1.0, 1.0);
+    }
+    let inv1 = inertia1.effective_inv_mass().max_element();
+    let inv2 = inertia2.effective_inv_mass().max_element();
+    if inv1 <= 0.0 || inv2 <= 0.0 {
+        return (1.0, 1.0);
+    }
+    // The lighter body has the larger inverse mass.
+    if inv1 > inv2 * max_mass_ratio {
+        (inv2 * max_mass_ratio / inv1, 1.0)
+    } else if inv2 > inv1 * max_mass_ratio {
+        (1.0, inv1 * max_mass_ratio / inv2)
+    } else {
+        (1.0, 1.0)
     }
 }
 
