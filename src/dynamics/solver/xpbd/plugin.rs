@@ -22,8 +22,6 @@ impl Plugin for XpbdSolverPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<XpbdVelocityProjection>();
 
-        app.register_required_components::<FixedJoint, FixedJointSolverData>();
-        app.register_required_components::<RevoluteJoint, RevoluteJointSolverData>();
         #[cfg(feature = "3d")]
         app.register_required_components::<SphericalJoint, SphericalJointSolverData>();
         app.register_required_components::<PrismaticJoint, PrismaticJointSolverData>();
@@ -46,8 +44,6 @@ impl Plugin for XpbdSolverPlugin {
         app.add_systems(
             PhysicsSchedule,
             (
-                prepare_xpbd_joint::<FixedJoint>,
-                prepare_xpbd_joint::<RevoluteJoint>,
                 #[cfg(feature = "3d")]
                 prepare_xpbd_joint::<SphericalJoint>,
                 prepare_xpbd_joint::<PrismaticJoint>,
@@ -63,10 +59,7 @@ impl Plugin for XpbdSolverPlugin {
         // that both add to body velocities.
         app.add_systems(
             SubstepSchedule,
-            (
-                warm_start_xpbd_motors::<RevoluteJoint>,
-                warm_start_xpbd_motors::<PrismaticJoint>,
-            )
+            (warm_start_xpbd_motors::<PrismaticJoint>,)
                 .chain()
                 .ambiguous_with_all()
                 .in_set(SubstepSolverSystems::WarmStart),
@@ -77,8 +70,6 @@ impl Plugin for XpbdSolverPlugin {
             SubstepSchedule,
             (
                 store_pre_solve_deltas,
-                solve_xpbd_joint::<FixedJoint>,
-                solve_xpbd_joint::<RevoluteJoint>,
                 #[cfg(feature = "3d")]
                 solve_xpbd_joint::<SphericalJoint>,
                 solve_xpbd_joint::<PrismaticJoint>,
@@ -100,8 +91,6 @@ impl Plugin for XpbdSolverPlugin {
         app.add_systems(
             PhysicsSchedule,
             (
-                writeback_joint_forces::<FixedJoint>,
-                writeback_joint_forces::<RevoluteJoint>,
                 #[cfg(feature = "3d")]
                 writeback_joint_forces::<SphericalJoint>,
                 writeback_joint_forces::<PrismaticJoint>,
@@ -405,7 +394,8 @@ fn writeback_joint_forces<C: Component + EntityConstraint<2> + XpbdConstraint<2>
 
     for (solver_data, mut forces) in &mut joints {
         forces.set_force(solver_data.total_position_lagrange() * rhs);
-        forces.set_torque(solver_data.total_rotation_lagrange() * rhs);
+        // The angular multipliers are what the second body is given.
+        forces.set_torque(-solver_data.total_rotation_lagrange() * rhs);
         forces.set_motor_force(solver_data.total_motor_lagrange() * rhs);
     }
 }

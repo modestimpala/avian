@@ -358,11 +358,11 @@ impl RevoluteJoint {
                 (omega_sq * position_error + two_zeta_omega * velocity_error) * dt * inv_denominator
             }
             MotorModel::AccelerationBased { stiffness, damping } => {
-                damping * velocity_error + stiffness * position_error * dt
+                (stiffness * position_error + damping * velocity_error) * dt
             }
             MotorModel::ForceBased { stiffness, damping } => {
-                // Velocity change = (stiffness * pos_error + damping * vel_error) * inv_inertia
-                (stiffness * position_error + damping * velocity_error) * w_sum
+                // The torque over the substep, by the inverse inertia.
+                (stiffness * position_error + damping * velocity_error) * w_sum * dt
             }
         };
 

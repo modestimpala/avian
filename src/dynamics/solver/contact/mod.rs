@@ -200,7 +200,16 @@ impl ContactConstraint {
                     anchor1,
                     anchor2,
                     tangents,
+                    #[cfg(feature = "2d")]
                     warm_start_enabled.then_some(point.warm_start_tangent_impulse),
+                    // Kept in the world: these tangents are not the last step's.
+                    #[cfg(feature = "3d")]
+                    warm_start_enabled.then(|| {
+                        bevy::math::Vec2::new(
+                            point.warm_start_tangent_impulse.dot(tangents[0]),
+                            point.warm_start_tangent_impulse.dot(tangents[1]),
+                        )
+                    }),
                 )),
                 anchor1,
                 anchor2,

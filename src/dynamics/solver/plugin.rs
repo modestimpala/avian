@@ -10,6 +10,10 @@ use crate::{
                 COLOR_OVERFLOW_INDEX, ConstraintGraph, ContactManifoldHandle, GraphColor,
             },
             contact::ContactConstraint,
+            impulse_joints::{
+                FixedJointImpulses, RevoluteJointImpulses, prepare_impulse_joints,
+                solve_impulse_joints, warm_start_impulse_joints, write_impulse_joint_forces,
+            },
             islands::{BodyIslandNode, IslandId, PhysicsIslands, WakeIslands},
             schedule::SubstepSolverSystems,
             softness_parameters::{SoftnessCoefficients, SoftnessParameters},
@@ -42,8 +46,10 @@ use core::cmp::Ordering;
 /// [Speculative collision](dynamics::ccd#speculative-collision) is used by default to prevent tunneling.
 /// Optional [sweep-based Continuous Collision Detection (CCD)](dynamics::ccd#swept-ccd) is handled by the [`CcdPlugin`].
 ///
-/// [Joints](dynamics::joints) and user constraints are currently solved using [Extended Position-Based Dynamics (XPBD)](super::xpbd)
-/// if the `xpbd_joints` feature is enabled. In the future, they may transition to an impulse-based approach as well.
+/// The [`FixedJoint`] and the [`RevoluteJoint`] are [solved with impulses](super::impulse_joints)
+/// in the same passes as contacts, so that friction answers the loads they carry. The other
+/// [joints](dynamics::joints) and user constraints are solved using
+/// [Extended Position-Based Dynamics (XPBD)](super::xpbd) if the `xpbd_joints` feature is enabled.
 ///
 /// ## Solver Bodies
 ///
@@ -73,8 +79,11 @@ use core::cmp::Ordering;
 /// 6. [Write back solver body data to rigid bodies](SolverSystems::Finalize)
 /// 7. [Store contact impulses for next frame's warm starting](SolverSystems::StoreContactImpulses)
 ///
-/// If the `xpbd_joints` feature is enabled, the [`XpbdSolverPlugin`] can also be added to solve joints
-/// using Extended Position-Based Dynamics (XPBD).
+/// Joints [solved with impulses](super::impulse_joints) are warm started, solved and relaxed
+/// just before the contacts in steps 2, 3 and 5 of the substepping loop.
+///
+/// If the `xpbd_joints` feature is enabled, the [`XpbdSolverPlugin`] can also be added to solve
+/// the other joints using Extended Position-Based Dynamics (XPBD).
 pub struct SolverPlugin {
     length_unit: f32,
 }
@@ -141,6 +150,30 @@ impl Plugin for SolverPlugin {
             prepare_contact_constraints.in_set(SolverSystems::PrepareContactConstraints),
         );
 
+        // Joints solved with impulses are prepared with the other joints,
+        // and report their forces once the bodies have been written back.
+        app.register_required_components::<FixedJoint, FixedJointImpulses>();
+        app.register_required_components::<RevoluteJoint, RevoluteJointImpulses>();
+        let physics = app
+            .get_schedule_mut(PhysicsSchedule)
+            .expect("add PhysicsSchedule first");
+        physics.add_systems((
+            (
+                prepare_impulse_joints::<FixedJoint>,
+                prepare_impulse_joints::<RevoluteJoint>,
+            )
+                .chain()
+                .in_set(SolverSystems::PrepareJoints),
+            // Each writes to its own kind of joint, as other solvers do to theirs.
+            (
+                write_impulse_joint_forces::<FixedJoint>,
+                write_impulse_joint_forces::<RevoluteJoint>,
+            )
+                .chain()
+                .ambiguous_with_all()
+                .in_set(SolverSystems::Finalize),
+        ));
+
         // Apply restitution.
         physics.add_systems(solve_restitution.in_set(SolverSystems::Restitution));
 
@@ -155,14 +188,39 @@ impl Plugin for SolverPlugin {
         // Warm start the impulses.
         // This applies the impulses stored from the previous substep,
         // which improves convergence.
-        substeps.add_systems(warm_start.in_set(SubstepSolverSystems::WarmStart));
+        substeps.add_systems(
+            (
+                warm_start_impulse_joints::<FixedJoint>,
+                warm_start_impulse_joints::<RevoluteJoint>,
+                warm_start,
+            )
+                .chain()
+                .in_set(SubstepSolverSystems::WarmStart),
+        );
 
         // Solve velocities using a position bias.
-        substeps.add_systems(solve_contacts::<true>.in_set(SubstepSolverSystems::SolveConstraints));
+        // Joints go first: contacts, solved last, are the ones kept most exactly.
+        substeps.add_systems(
+            (
+                solve_impulse_joints::<FixedJoint, true>,
+                solve_impulse_joints::<RevoluteJoint, true>,
+                solve_contacts::<true>,
+            )
+                .chain()
+                .in_set(SubstepSolverSystems::SolveConstraints),
+        );
 
         // Relax biased velocities and impulses.
         // This reduces overshooting caused by warm starting.
-        substeps.add_systems(solve_contacts::<false>.in_set(SubstepSolverSystems::Relax));
+        substeps.add_systems(
+            (
+                solve_impulse_joints::<FixedJoint, false>,
+                solve_impulse_joints::<RevoluteJoint, false>,
+                solve_contacts::<false>,
+            )
+                .chain()
+                .in_set(SubstepSolverSystems::Relax),
+        );
 
         // Perform constraint damping.
         substeps.add_systems(
@@ -602,6 +660,22 @@ pub struct SolverConfig {
     ///
     /// Default: `f32::INFINITY` (no limit)
     pub max_mass_ratio: f32,
+
+    /// The frequency in Hertz that joints [solved with impulses](super::impulse_joints)
+    /// are held shut with where they have no compliance of their own. A higher frequency
+    /// holds a loaded joint closer, but can hurt stability.
+    ///
+    /// The solver limits it to a quarter of the substep rate, which is what the default
+    /// asks for.
+    ///
+    /// Default: `f32::INFINITY`
+    pub joint_frequency: f32,
+
+    /// The damping ratio that joints [solved with impulses](super::impulse_joints)
+    /// are held shut with where they have no compliance of their own.
+    ///
+    /// Default: `2.0`
+    pub joint_damping_ratio: f32,
 }
 
 impl Default for SolverConfig {
@@ -614,6 +688,8 @@ impl Default for SolverConfig {
             restitution_threshold: 1.0,
             restitution_iterations: 1,
             max_mass_ratio: f32::INFINITY,
+            joint_frequency: f32::INFINITY,
+            joint_damping_ratio: 2.0,
         }
     }
 }
@@ -1096,14 +1172,29 @@ fn store_contact_impulses(
                 );
             };
 
+            #[cfg(feature = "3d")]
+            let tangents = constraint.tangent_directions();
+
             for (contact, constraint_point) in
                 manifold.points.iter_mut().zip(constraint.points.iter())
             {
                 contact.warm_start_normal_impulse = constraint_point.normal_part.impulse;
-                contact.warm_start_tangent_impulse = constraint_point
-                    .tangent_part
-                    .as_ref()
-                    .map_or(default(), |part| part.impulse);
+                #[cfg(feature = "2d")]
+                {
+                    contact.warm_start_tangent_impulse = constraint_point
+                        .tangent_part
+                        .as_ref()
+                        .map_or(default(), |part| part.impulse);
+                }
+                #[cfg(feature = "3d")]
+                {
+                    contact.warm_start_tangent_impulse = constraint_point
+                        .tangent_part
+                        .as_ref()
+                        .map_or(default(), |part| {
+                            part.impulse.x * tangents[0] + part.impulse.y * tangents[1]
+                        });
+                }
                 contact.normal_impulse = constraint_point.normal_part.total_impulse;
             }
         }

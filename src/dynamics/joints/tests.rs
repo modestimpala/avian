@@ -351,8 +351,8 @@ fn revolute_motor_position_target() {
         let (axis, angle) = rotation.to_axis_angle();
         let signed_angle = angle * axis.z.signum();
         assert!(
-            signed_angle.abs() > 0.3,
-            "Motor should have rotated the body: {}",
+            (signed_angle - target_angle).abs() < 0.05,
+            "Motor should have brought the body to its target: {}",
             signed_angle
         );
     }
@@ -1009,5 +1009,157 @@ fn joints_round_one_knot_survive_sleeping_and_removal_in_any_order() {
         for _ in 0..30 {
             app.update();
         }
+    }
+}
+
+/// A floor, and on it a 10 kg block whose friction can hold 59 N.
+#[cfg(feature = "3d")]
+fn block_on_a_floor(substeps: u32) -> (App, Entity) {
+    let mut app = create_app();
+    app.insert_resource(SubstepCount(substeps));
+    app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(20.0, 1.0, 20.0),
+        Friction::new(0.6),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+    ));
+    app.finish();
+    let block = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(0.4, 0.4, 0.4),
+            Mass(10.0),
+            Friction::new(0.6),
+            SleepingDisabled,
+            Transform::from_xyz(0.0, 0.2, 0.0),
+        ))
+        .id();
+    (app, block)
+}
+
+/// How far a body goes between the first second, when it has taken up its load, and the
+/// tenth.
+#[cfg(feature = "3d")]
+fn creep(app: &mut App, body: Entity) -> f32 {
+    for _ in 0..(1.0 / TIMESTEP) as usize {
+        app.update();
+    }
+    let from = app.world().get::<Position>(body).unwrap().0;
+    for _ in 0..(9.0 / TIMESTEP) as usize {
+        app.update();
+    }
+    app.world().get::<Position>(body).unwrap().0.distance(from) as f32
+}
+
+/// A block pushed with less than its friction can hold stays where it stands, however
+/// few substeps there are: the friction that held it last step still points the same way.
+#[cfg(feature = "3d")]
+#[test]
+fn a_push_within_friction_does_not_creep() {
+    for substeps in [1, 4, 12] {
+        let (mut app, block) = block_on_a_floor(substeps);
+        app.world_mut()
+            .entity_mut(block)
+            .insert(ConstantForce::new(30.0, 0.0, 0.0));
+        let crept = creep(&mut app, block);
+        assert!(
+            crept < 1e-4,
+            "the block crept {crept} m in 9 s at {substeps} substeps"
+        );
+    }
+}
+
+/// A block held by friction, with a steady sideways load passed to it through a joint,
+/// stays where it stands: the joint gets no motion that friction has not answered.
+#[cfg(feature = "3d")]
+#[test]
+fn a_joint_load_within_friction_does_not_creep() {
+    for substeps in [4, 12] {
+        let (mut app, block) = block_on_a_floor(substeps);
+        // A sled beside it slides freely and is pushed away with 30 N.
+        let sled = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::cuboid(0.4, 0.4, 0.4),
+                Mass(5.0),
+                Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
+                ConstantForce::new(30.0, 0.0, 0.0),
+                SleepingDisabled,
+                Transform::from_xyz(0.5, 0.2, 0.0),
+            ))
+            .id();
+        app.world_mut().spawn((
+            FixedJoint::new(block, sled)
+                .with_anchor(RVector::new(0.25, 0.2, 0.0))
+                .with_point_compliance(1e-6)
+                .with_angle_compliance(1e-4),
+            JointCollisionDisabled,
+        ));
+        let crept = creep(&mut app, block);
+        assert!(
+            crept < 1e-4,
+            "the block crept {crept} m in 9 s at {substeps} substeps"
+        );
+    }
+}
+
+/// A joint reports the force and the torque about its anchor that it applies to its first
+/// body. A weight held out sideways from a fixed support pulls the support down, and
+/// turns it the way the weight would fall.
+#[cfg(feature = "3d")]
+#[test]
+fn a_fixed_joint_reports_the_load_on_its_first_body() {
+    for compliance in [0.0, 1e-5] {
+        let mut app = create_app();
+        app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+        app.finish();
+        let support = app
+            .world_mut()
+            .spawn((RigidBody::Static, Position(RVector::ZERO)))
+            .id();
+        let weight = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Position(RVector::X),
+                Mass(1.0),
+                AngularInertia::new(Vec3::splat(0.1)),
+                SleepingDisabled,
+            ))
+            .id();
+        let joint = app
+            .world_mut()
+            .spawn((
+                FixedJoint::new(support, weight)
+                    .with_anchor(RVector::ZERO)
+                    .with_point_compliance(compliance)
+                    .with_angle_compliance(compliance),
+                JointForces::new(),
+            ))
+            .id();
+        for _ in 0..(2.0 / TIMESTEP) as usize {
+            app.update();
+        }
+        let forces = app.world().get::<JointForces>(joint).unwrap();
+        let sag = app.world().get::<Position>(weight).unwrap().0.y;
+        println!(
+            "compliance {compliance}: force {} torque {} sag {sag}",
+            forces.force(),
+            forces.torque()
+        );
+        assert!(
+            forces.force().distance(Vec3::new(0.0, -9.81, 0.0)) < 0.2,
+            "force {}",
+            forces.force()
+        );
+        assert!(
+            forces.torque().distance(Vec3::new(0.0, 0.0, -9.81)) < 0.2,
+            "torque {}",
+            forces.torque()
+        );
+        assert!(sag.abs() < 0.005, "the weight sagged {sag} m");
     }
 }
