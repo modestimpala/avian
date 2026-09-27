@@ -1199,6 +1199,10 @@ fn store_contact_impulses(
             #[cfg(feature = "3d")]
             let tangents = constraint.tangent_directions();
 
+            if let Some(part) = &constraint.rolling_part {
+                manifold.warm_start_rolling_impulse = part.impulse;
+            }
+
             for (contact, constraint_point) in
                 manifold.points.iter_mut().zip(constraint.points.iter())
             {

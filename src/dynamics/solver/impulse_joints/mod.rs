@@ -348,7 +348,7 @@ pub(super) fn solve2(k: Mat2, rhs: Vec2) -> Vec2 {
 /// held across it all the same. So `k` is first scaled to a diagonal of ones, where how
 /// near it is to having such a direction no longer depends on the bodies' proportions.
 #[cfg(feature = "3d")]
-pub(super) fn solve3(k: SymmetricTensor, rhs: Vec3) -> Vec3 {
+pub(crate) fn solve3(k: SymmetricTensor, rhs: Vec3) -> Vec3 {
     let diagonal = k.diagonal();
     if diagonal.max_element() <= 0.0 {
         return Vec3::ZERO;

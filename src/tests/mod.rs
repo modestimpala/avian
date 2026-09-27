@@ -341,3 +341,145 @@ fn a_heavy_slab_on_light_rods_settles_with_the_mass_ratio_limited() {
         eprintln!("limited: {:?}, unlimited: {unlimited:?}", (asleep, fastest));
     }
 }
+
+/// A log a fifth of a metre through laid across a slope of `slope` radians, touching over
+/// a patch of radius `patch`: how far down the slope it has gone after three seconds, m.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn log_on_a_slope(slope: f32, patch: f32) -> f32 {
+    let mut app = create_app();
+    let tilt = Quat::from_rotation_z(-slope);
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(40.0, 1.0, 10.0),
+        Transform::from_translation(tilt * Vec3::new(0.0, -0.5, 0.0)).with_rotation(tilt),
+        Friction::new(0.8),
+    ));
+    // Lying along z, so it rolls down x.
+    let log = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cylinder(0.1, 1.0),
+            Transform::from_translation(tilt * Vec3::new(0.0, 0.1, 0.0))
+                .with_rotation(tilt * Quat::from_rotation_x(core::f32::consts::FRAC_PI_2)),
+            Friction::new(0.8),
+            ContactPatch(patch),
+        ))
+        .id();
+    for _ in 0..180 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    let at = app.world().get::<Transform>(log).unwrap().translation;
+    (tilt.inverse() * at).x
+}
+
+/// A log lies still on a slope no steeper than its patch is wide for its girth, and rolls
+/// down a steeper one, and down any slope on a point.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_log_lies_on_a_slope_its_patch_can_hold() {
+    // A patch of 15 mm on a log of radius 100 mm holds a slope of up to 0.15.
+    let held = log_on_a_slope(0.08, 0.015);
+    assert!(held.abs() < 0.002, "rolled {held} m with a patch");
+    // Rolling, a log gathers speed at two thirds of what the slope gives it, less what
+    // the patch holds: 2/3 g (sin 0.25 - 0.15 cos 0.25), 3.0 m in three seconds.
+    let steep = log_on_a_slope(0.25, 0.015);
+    assert!((steep - 3.0).abs() < 0.2, "rolled {steep} m down a steep slope");
+    let point = log_on_a_slope(0.08, 0.0);
+    assert!((point - 2.35).abs() < 0.2, "rolled {point} m on a point");
+}
+
+/// A ball set spinning on the spot, touching over a patch of radius `patch`: how fast it
+/// still spins after two seconds, rad/s.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn spun_ball(patch: f32) -> f32 {
+    let mut app = create_app();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(10.0, 1.0, 10.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+        Friction::new(0.5),
+    ));
+    let ball = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::sphere(0.1),
+            Transform::from_xyz(0.0, 0.1, 0.0),
+            Friction::new(0.5),
+            ContactPatch(patch),
+            AngularVelocity(Vec3::Y * 10.0),
+        ))
+        .id();
+    for _ in 0..120 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    app.world().get::<AngularVelocity>(ball).unwrap().y
+}
+
+/// Twisting on the spot is stopped by the friction over the patch, as fast as that
+/// friction can: and not at all on a point.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_spun_ball_is_stopped_by_its_patch() {
+    let point = spun_ball(0.0);
+    assert!(point > 9.0, "spinning at {point} rad/s on a point");
+    // A ball of radius r spun at w has 2/5 m r^2 w to lose, and a patch of radius a takes
+    // 2/3 mu a m g of it a second: all of it in 3 r^2 w / (5 mu a g), here 0.61 s.
+    let stopped = spun_ball(0.02);
+    assert!(
+        stopped.abs() < 0.01,
+        "spinning at {stopped} rad/s on a patch"
+    );
+    // A patch a tenth as wide has taken a fifth of it in two seconds.
+    let narrow = spun_ball(0.002);
+    assert!(
+        (narrow - 6.73).abs() < 0.3,
+        "spinning at {narrow} rad/s on a narrow patch"
+    );
+}
+
+/// A wheel on a slope of `slope` radians, touching over a patch of radius `patch`: how far
+/// down the slope it has gone after three seconds, m.
+#[cfg(all(feature = "2d", feature = "default-collider"))]
+fn wheel_on_a_slope(slope: f32, patch: f32) -> f32 {
+    let mut app = create_app();
+    let tilt = Quat::from_rotation_z(-slope);
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::rectangle(4000.0, 100.0),
+        Transform::from_translation(tilt * Vec3::new(0.0, -50.0, 0.0)).with_rotation(tilt),
+        Friction::new(0.8),
+    ));
+    let wheel = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::circle(10.0),
+            Transform::from_translation(tilt * Vec3::new(0.0, 10.0, 0.0)),
+            Friction::new(0.8),
+            ContactPatch(patch),
+        ))
+        .id();
+    for _ in 0..180 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    let at = app.world().get::<Transform>(wheel).unwrap().translation;
+    (tilt.inverse() * at).x
+}
+
+/// A wheel stands on a slope no steeper than its patch is wide for its size, and rolls
+/// down a steeper one, and down any slope on a point.
+#[test]
+#[cfg(all(feature = "2d", feature = "default-collider"))]
+fn a_wheel_stands_on_a_slope_its_patch_can_hold() {
+    // A patch of 1.5 on a wheel of radius 10 holds a slope of up to 0.15.
+    let held = wheel_on_a_slope(0.08, 1.5);
+    assert!(held.abs() < 0.02, "rolled {held} with a patch");
+    // Rolling, a disc gathers speed at two thirds of what the slope gives it, less what
+    // the patch holds: 2/3 g (sin 0.25 - 0.15 cos 0.25), 3.0 in three seconds.
+    let steep = wheel_on_a_slope(0.25, 1.5);
+    assert!((steep - 3.0).abs() < 0.2, "rolled {steep} down a steep slope");
+    let point = wheel_on_a_slope(0.08, 0.0);
+    assert!((point - 2.35).abs() < 0.2, "rolled {point} on a point");
+}

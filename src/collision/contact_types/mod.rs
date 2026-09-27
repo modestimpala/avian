@@ -368,6 +368,12 @@ pub struct ContactManifold {
     pub friction: f32,
     /// The effective coefficient of [restitution](Restitution) used for the contact surface.
     pub restitution: f32,
+    /// The radius of the [`ContactPatch`] the bodies touch over, or zero if they touch at
+    /// points.
+    pub patch: f32,
+    /// The angular impulse the patch resisted rolling and twisting with, kept for warm
+    /// starting: what it gave the second body, in world space.
+    pub warm_start_rolling_impulse: AngularVector,
     /// The desired relative linear speed of the bodies along the surface,
     /// expressed in world space as `tangent_speed2 - tangent_speed1`.
     ///
@@ -401,6 +407,8 @@ impl ContactManifold {
             normal,
             friction: 0.0,
             restitution: 0.0,
+            patch: 0.0,
+            warm_start_rolling_impulse: default(),
             #[cfg(feature = "2d")]
             tangent_speed: 0.0,
             #[cfg(feature = "3d")]
@@ -414,6 +422,21 @@ impl ContactManifold {
         self.points
             .iter()
             .fold(0.0, |acc, contact| acc + contact.normal_impulse)
+    }
+
+    /// Takes up the rolling impulse of whichever of the `previous` manifolds faced most
+    /// nearly as this one does, for warm starting.
+    #[inline]
+    pub fn match_rolling(&mut self, previous: &[ContactManifold]) {
+        // Manifolds facing further apart than this are not the same contact.
+        let mut nearest = 0.9;
+        for manifold in previous {
+            let facing = manifold.normal.dot(self.normal);
+            if facing > nearest {
+                nearest = facing;
+                self.warm_start_rolling_impulse = manifold.warm_start_rolling_impulse;
+            }
+        }
     }
 
     /// The magnitude of the largest impulse applied at a contact point in the manifold along the contact normal.

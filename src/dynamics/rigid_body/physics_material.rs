@@ -225,6 +225,29 @@ impl From<f32> for Friction {
     }
 }
 
+/// The radius of the patch a [rigid body] or [collider] touches others over, for bodies
+/// that do not touch at points: rough ones, like bark on bark, and soft ones.
+///
+/// A body that touches at a point rolls and spins on it freely. Over a patch the force
+/// between the bodies can stand off the middle, as far as the patch reaches, and the patch's
+/// friction works at that arm too. So pressed together with a force `N`, the bodies resist
+/// rolling over one another with a torque of up to `radius * N`, and twisting on one another
+/// with up to two thirds of `friction * radius * N`, as a disc pressed evenly does.
+///
+/// A log of radius `R` with a patch of radius `a` lies still on a slope of up to `a / R`.
+///
+/// If a collider does not have a [`ContactPatch`] specified, that of its rigid body entity
+/// is used instead, and no patch if it has none either. Of two bodies in contact, the wider
+/// patch is used.
+///
+/// [rigid body]: crate::dynamics::RigidBody
+/// [collider]: crate::dynamics::Collider
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serialize", reflect(Serialize, Deserialize))]
+#[reflect(Debug, Component, Default, PartialEq)]
+pub struct ContactPatch(pub f32);
+
 /// A component for [restitution], controlling how bouncy a [rigid body] or [collider] is.
 ///
 /// The coefficient should be between 0 and 1, where 0 corresponds to a **perfectly inelastic** collision with zero bounce,

@@ -34,6 +34,7 @@ struct ColliderQuery<C: AnyCollider> {
     layers: Read<CollisionLayers>,
     friction: Option<Read<Friction>>,
     restitution: Option<Read<Restitution>>,
+    patch: Option<Read<ContactPatch>>,
     collision_margin: Option<Read<CollisionMargin>>,
     is_sensor: Has<Sensor>,
 }
@@ -50,6 +51,7 @@ struct RigidBodyQuery {
     // TODO: We should define these as purely collider components and not query for them here.
     friction: Option<Read<Friction>>,
     restitution: Option<Read<Restitution>>,
+    patch: Option<Read<ContactPatch>>,
     collision_margin: Option<Read<CollisionMargin>>,
     speculative_ccd: Option<Read<SpeculativeCcd>>,
     size_metrics: Read<BodySizeMetrics>,
@@ -517,6 +519,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                     lin_vel1,
                     ang_vel1,
                     rb_friction1,
+                    rb_patch1,
                     rb_collision_margin1,
                     speculative_ccd1,
                     size_metrics1,
@@ -532,6 +535,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                             body.linear_velocity.0,
                             body.angular_velocity.0,
                             body.friction,
+                            body.patch,
                             body.collision_margin,
                             body.speculative_ccd.copied(),
                             *body.size_metrics,
@@ -547,6 +551,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                     lin_vel2,
                     ang_vel2,
                     rb_friction2,
+                    rb_patch2,
                     rb_collision_margin2,
                     speculative_ccd2,
                     size_metrics2,
@@ -562,6 +567,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                             body.linear_velocity.0,
                             body.angular_velocity.0,
                             body.friction,
+                            body.patch,
                             body.collision_margin,
                             body.speculative_ccd.copied(),
                             *body.size_metrics,
@@ -742,6 +748,12 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                             .unwrap_or(self.default_restitution.0),
                     )
                     .coefficient;
+                // The wider of the patches the two touch over.
+                let patch = collider1
+                    .patch
+                    .or(rb_patch1)
+                    .map_or(0.0, |patch| patch.0)
+                    .max(collider2.patch.or(rb_patch2).map_or(0.0, |patch| patch.0));
 
                 // Use the collider's own collision margin if specified, and fall back to the body's
                 // collision margin.
@@ -814,6 +826,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                     // Set the initial surface properties.
                     manifold.friction = friction;
                     manifold.restitution = restitution;
+                    manifold.patch = patch;
                     #[cfg(feature = "2d")]
                     {
                         manifold.tangent_speed = 0.0;
@@ -892,6 +905,12 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                         for previous_manifold in old_manifolds.iter() {
                             manifold.match_contacts(&previous_manifold.points, distance_threshold);
                         }
+                    }
+                }
+
+                if patch > 0.0 {
+                    for manifold in contacts.manifolds.iter_mut() {
+                        manifold.match_rolling(&old_manifolds);
                     }
                 }
 

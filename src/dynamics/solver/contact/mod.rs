@@ -1,9 +1,11 @@
 //! Constraints and other types used for solving contacts.
 
 mod normal_part;
+mod rolling_part;
 mod tangent_part;
 
 pub use normal_part::ContactNormalPart;
+pub use rolling_part::ContactRollingPart;
 pub use tangent_part::ContactTangentPart;
 
 use core::cmp::Ordering;
@@ -100,6 +102,10 @@ pub struct ContactConstraint {
     /// The contact points in the manifold. Each point shares the same `normal`.
     // TODO: Use a `SmallVec`
     pub points: Vec<ContactConstraintPoint>,
+    /// The part that resists rolling and twisting.
+    ///
+    /// `None` if the bodies touch at points, and not over a [`ContactPatch`].
+    pub rolling_part: Option<ContactRollingPart>,
     /// The stable identifier of the [`ContactEdge`] in the [`ContactGraph`].
     ///
     /// [`ContactEdge`]: crate::collision::contact_types::ContactEdge
@@ -236,6 +242,14 @@ impl ContactConstraint {
             #[cfg(feature = "3d")]
             tangent1: tangents[0],
             points,
+            rolling_part: (manifold.patch > 0.0).then(|| {
+                ContactRollingPart::generate(
+                    &i1,
+                    &i2,
+                    manifold.patch,
+                    warm_start_enabled.then_some(manifold.warm_start_rolling_impulse),
+                )
+            }),
             contact_id,
             manifold_index,
         }
@@ -282,6 +296,12 @@ impl ContactConstraint {
 
             body2.linear_velocity += p * inv_mass2;
             body2.angular_velocity += inv_angular_inertia2 * cross(r2, p);
+        }
+
+        if let Some(part) = &self.rolling_part {
+            let impulse = warm_start_coefficient * part.impulse;
+            body1.angular_velocity -= inv_angular_inertia1 * impulse;
+            body2.angular_velocity += inv_angular_inertia2 * impulse;
         }
     }
 
@@ -372,6 +392,23 @@ impl ContactConstraint {
 
                 body2.linear_velocity += impulse * inv_mass2;
                 body2.angular_velocity += inv_angular_inertia2 * cross(r2, impulse);
+            }
+
+            // Rolling and twisting, resisted as sliding is.
+            if let Some(part) = &mut self.rolling_part {
+                let pressed = self
+                    .points
+                    .iter()
+                    .map(|point| point.normal_part.impulse)
+                    .sum();
+                let impulse = part.solve_impulse(
+                    body2.angular_velocity - body1.angular_velocity,
+                    self.normal,
+                    self.friction,
+                    pressed,
+                );
+                body1.angular_velocity -= inv_angular_inertia1 * impulse;
+                body2.angular_velocity += inv_angular_inertia2 * impulse;
             }
         }
     }
