@@ -156,7 +156,12 @@ impl ContactNormalPart {
         let new_impulse = (self.impulse + impulse).max(0.0);
         impulse = new_impulse - self.impulse;
         self.impulse = new_impulse;
-        self.total_impulse += new_impulse;
+        // What the substep comes to press with is what it has after relaxing. Counted
+        // after the biased solve as well, a body at rest read as pressing with twice
+        // its weight.
+        if !USE_BIAS {
+            self.total_impulse += new_impulse;
+        }
 
         // Return the clamped incremental normal impulse.
         impulse

@@ -384,7 +384,10 @@ fn a_log_lies_on_a_slope_its_patch_can_hold() {
     // Rolling, a log gathers speed at two thirds of what the slope gives it, less what
     // the patch holds: 2/3 g (sin 0.25 - 0.15 cos 0.25), 3.0 m in three seconds.
     let steep = log_on_a_slope(0.25, 0.015);
-    assert!((steep - 3.0).abs() < 0.2, "rolled {steep} m down a steep slope");
+    assert!(
+        (steep - 3.0).abs() < 0.2,
+        "rolled {steep} m down a steep slope"
+    );
     let point = log_on_a_slope(0.08, 0.0);
     assert!((point - 2.35).abs() < 0.2, "rolled {point} m on a point");
 }
@@ -479,7 +482,54 @@ fn a_wheel_stands_on_a_slope_its_patch_can_hold() {
     // Rolling, a disc gathers speed at two thirds of what the slope gives it, less what
     // the patch holds: 2/3 g (sin 0.25 - 0.15 cos 0.25), 3.0 in three seconds.
     let steep = wheel_on_a_slope(0.25, 1.5);
-    assert!((steep - 3.0).abs() < 0.2, "rolled {steep} down a steep slope");
+    assert!(
+        (steep - 3.0).abs() < 0.2,
+        "rolled {steep} down a steep slope"
+    );
     let point = wheel_on_a_slope(0.08, 0.0);
     assert!((point - 2.35).abs() < 0.2, "rolled {point} on a point");
+}
+
+/// A body at rest presses on what it rests on with its weight: the impulses its contacts
+/// report over a step, divided by the step, come to it.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_resting_body_presses_with_its_weight() {
+    let mut app = create_app();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(10.0, 1.0, 10.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+    ));
+    let block = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 0.5, 1.0),
+            Mass(40.0),
+            Transform::from_xyz(0.0, 0.25, 0.0),
+            SleepingDisabled,
+        ))
+        .id();
+    for _ in 0..120 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    let step = app
+        .world()
+        .resource::<Time<Fixed>>()
+        .timestep()
+        .as_secs_f32();
+    let pressed: f32 = app
+        .world()
+        .resource::<ContactGraph>()
+        .contact_pairs_with(block)
+        .flat_map(|pair| &pair.manifolds)
+        .map(|manifold| manifold.total_normal_impulse())
+        .sum();
+    let weight = 40.0 * 9.81;
+    assert!(
+        (pressed / step - weight).abs() < 0.02 * weight,
+        "pressing with {} N of {weight} N",
+        pressed / step
+    );
 }
