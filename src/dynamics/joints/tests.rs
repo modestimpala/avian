@@ -1261,3 +1261,192 @@ fn a_ball_joint_holds_its_anchor_and_its_swing() {
         "the rod swung {steepest} rad against a limit of 0.5"
     );
 }
+
+/// A fixed joint holds a thin rod against turning, along the axes or askew of them. A
+/// rod turns about its length thousands of times as readily as across it, and must be
+/// held across it all the same.
+#[cfg(feature = "3d")]
+#[test]
+fn a_fixed_joint_holds_a_thin_rod() {
+    for width in [0.02_f32, 0.01, 0.003] {
+        for turn in [
+            Quat::IDENTITY,
+            Quat::from_euler(EulerRot::XYZ, 0.4, -0.7, 1.1),
+        ] {
+            let mut app = create_app();
+            app.finish();
+            let support = app
+                .world_mut()
+                .spawn((RigidBody::Static, Position(RVector::ZERO)))
+                .id();
+            // 1 kg, 2 m long, lying along its own X, and set turning.
+            let across = (4.0 + width * width) / 12.0;
+            let rod = app
+                .world_mut()
+                .spawn((
+                    RigidBody::Dynamic,
+                    Position(RVector::ZERO),
+                    Rotation(turn),
+                    Mass(1.0),
+                    AngularInertia::new(Vec3::new(width * width / 6.0, across, across)),
+                    AngularVelocity(turn * Vec3::new(0.0, 0.6, 1.0)),
+                    SleepingDisabled,
+                ))
+                .id();
+            // Held as it stands.
+            app.world_mut().spawn(
+                FixedJoint::new(support, rod)
+                    .with_anchor(RVector::ZERO)
+                    .with_basis(Quat::IDENTITY),
+            );
+            for _ in 0..(0.5 / TIMESTEP) as usize {
+                app.update();
+            }
+            let turning = app.world().get::<AngularVelocity>(rod).unwrap().0;
+            let turned = app.world().get::<Rotation>(rod).unwrap().0;
+            assert!(
+                turning.length() < 0.01 && turned.angle_between(turn) < 0.01,
+                "a rod {width} m across, held at {turn}, turns at {turning} and has \
+                 turned {} rad",
+                turned.angle_between(turn)
+            );
+        }
+    }
+}
+
+/// Sticks stood as a tipi, their tops tied to a knot between them by cord that gives,
+/// come to rest, however light they are for the cord: a tie stiffer than a substep can
+/// follow for what it ties must not set them spinning.
+#[cfg(feature = "3d")]
+#[test]
+fn a_tied_tipi_comes_to_rest() {
+    // Sticks of 4 g, 80 g and 2 kg.
+    for density in [1.0, 20.0, 500.0] {
+        let mut app = create_app();
+        app.insert_resource(SubstepCount(6));
+        app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+        // The sticks stand on the ground, and pass through one another where their tops
+        // meet.
+        let (ground, wood) = (LayerMask(1), LayerMask(2));
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 1.0, 20.0),
+            CollisionLayers::new(ground, wood),
+            Transform::from_xyz(0.0, -0.5, 0.0),
+        ));
+        app.finish();
+        let knot_at = Vec3::new(0.0, 1.35, 0.0);
+        let knot = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::sphere(0.02),
+                ColliderDensity(3000.0),
+                CollisionLayers::NONE,
+                LockedAxes::ROTATION_LOCKED,
+                Transform::from_translation(knot_at),
+                SleepingDisabled,
+            ))
+            .id();
+        let sticks: Vec<Entity> = (0..5)
+            .map(|i| {
+                let round = i as f32 * core::f32::consts::TAU / 5.0 + 0.2;
+                let out = Vec3::new(round.cos(), 0.0, round.sin());
+                let top = knot_at + out * 0.04;
+                let butt = out * (0.7 + 0.08 * i as f32) + Vec3::Y * 0.03;
+                let length = top.distance(butt);
+                let along = (top - butt).normalize();
+                let stick = app
+                    .world_mut()
+                    .spawn((
+                        RigidBody::Dynamic,
+                        Collider::cuboid(length, 0.05, 0.05),
+                        ColliderDensity(density),
+                        CollisionLayers::new(wood, ground),
+                        Transform::from_translation(top - along * length * 0.5)
+                            .with_rotation(Quat::from_rotation_arc(Vec3::X, along)),
+                        SleepingDisabled,
+                    ))
+                    .id();
+                app.world_mut().spawn((
+                    SphericalJoint {
+                        point_compliance: 2e-4,
+                        ..SphericalJoint::new(knot, stick)
+                            .with_local_anchor1(top - knot_at)
+                            .with_local_anchor2(Vec3::X * length * 0.5)
+                    },
+                    JointCollisionDisabled,
+                ));
+                stick
+            })
+            .collect();
+        for _ in 0..(30.0 / TIMESTEP) as usize {
+            app.update();
+        }
+        for stick in sticks {
+            let spin = app.world().get::<AngularVelocity>(stick).unwrap().0;
+            let speed = app.world().get::<LinearVelocity>(stick).unwrap().0;
+            assert!(
+                spin.length() < 0.01 && speed.length() < 0.01,
+                "a stick of density {density} still turns at {spin} and moves at {speed}"
+            );
+        }
+    }
+}
+
+/// A fixed joint that gives more one way than another gives the same however it lies in
+/// the world, stiffer than a substep can follow or not.
+#[cfg(feature = "3d")]
+#[test]
+fn a_joint_gives_the_same_however_it_lies() {
+    // Stiff about X and Z, and soft about Y: the first too stiff to follow for a body
+    // this light, the second not.
+    let compliance = SymmetricTensor::from_diagonal(Vec3::new(1e-7, 2e-2, 1e-7));
+    let turned = |lie: Quat| {
+        let mut app = create_app();
+        app.finish();
+        let support = app
+            .world_mut()
+            .spawn((RigidBody::Static, Position(RVector::ZERO), Rotation(lie)))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Position((lie * Vec3::new(0.3, 0.0, 0.1)).into()),
+                Rotation(lie),
+                Mass(0.2),
+                AngularInertia::new(Vec3::new(0.002, 0.004, 0.003)),
+                ConstantTorque(lie * Vec3::new(0.3, 0.3, 0.3)),
+                AngularDamping(4.0),
+                SleepingDisabled,
+            ))
+            .id();
+        let mut joint = FixedJoint::new(support, body)
+            .with_anchor(RVector::ZERO)
+            .with_basis(lie);
+        joint.angle_compliance_tensor = Some(compliance);
+        app.world_mut().spawn(joint);
+        for _ in 0..(3.0 / TIMESTEP) as usize {
+            app.update();
+        }
+        // How it has turned, as the joint sees it.
+        let turn = app.world().get::<Rotation>(body).unwrap().0;
+        (lie.inverse() * turn).to_scaled_axis()
+    };
+    let level = turned(Quat::IDENTITY);
+    assert!(
+        (level.y - 0.3 * 2e-2).abs() < 3e-4 && level.x.abs() < 1e-3 && level.z.abs() < 1e-3,
+        "it turned {level}"
+    );
+    for lie in [
+        Quat::from_rotation_z(core::f32::consts::FRAC_PI_4),
+        Quat::from_euler(EulerRot::XYZ, 0.4, -0.7, 1.1),
+    ] {
+        let askew = turned(lie);
+        assert!(
+            askew.distance(level) < 0.02 * level.length(),
+            "lying at {lie} it turned {askew}, and level {level}"
+        );
+    }
+}

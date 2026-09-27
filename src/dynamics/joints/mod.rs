@@ -277,6 +277,12 @@ pub enum JointSystems {
 
 /// A trait for constraints between entities.
 pub trait EntityConstraint<const ENTITY_COUNT: usize>: MapEntities {
+    /// Whether the constraint is solved by moving its bodies, as XPBD does, so that their
+    /// velocities must be found afterwards from how far they were moved. A constraint
+    /// solved with impulses changes the velocities themselves, and its bodies are spared
+    /// that.
+    const MOVES_BODIES: bool = true;
+
     /// The entities participating in the constraint.
     fn entities(&self) -> [Entity; ENTITY_COUNT];
 }

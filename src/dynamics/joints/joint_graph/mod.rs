@@ -84,6 +84,14 @@ pub struct JointGraphEdge {
     ///
     /// [`JointCollisionDisabled`]: crate::dynamics::joints::JointCollisionDisabled
     pub collision_disabled: bool,
+
+    /// If `true`, the joint is solved by moving its bodies, and their velocities are
+    /// found afterwards from how far they were moved.
+    ///
+    /// This is [`EntityConstraint::MOVES_BODIES`] of the joint.
+    ///
+    /// [`EntityConstraint::MOVES_BODIES`]: crate::dynamics::joints::EntityConstraint::MOVES_BODIES
+    pub moves_bodies: bool,
 }
 
 impl JointGraphEdge {
@@ -97,7 +105,13 @@ impl JointGraphEdge {
             body1,
             body2,
             collision_disabled,
+            moves_bodies: true,
         }
+    }
+
+    /// Whether any of the joints of `body` is solved by moving it.
+    pub(crate) fn any_moves(graph: &JointGraph, body: Entity) -> bool {
+        graph.joints_of(body).any(|edge| edge.moves_bodies)
     }
 }
 

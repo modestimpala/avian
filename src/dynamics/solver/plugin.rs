@@ -11,9 +11,9 @@ use crate::{
             },
             contact::ContactConstraint,
             impulse_joints::{
-                DistanceJointImpulses, FixedJointImpulses, RevoluteJointImpulses,
-                prepare_impulse_joints, solve_impulse_joints, warm_start_impulse_joints,
-                write_impulse_joint_forces,
+                ActiveJoints, DistanceJointImpulses, FixedJointImpulses, RevoluteJointImpulses,
+                finish_impulse_joints, prepare_impulse_joints, solve_impulse_joints,
+                warm_start_impulse_joints,
             },
             islands::{BodyIslandNode, IslandId, PhysicsIslands, WakeIslands},
             schedule::SubstepSolverSystems,
@@ -158,6 +158,11 @@ impl Plugin for SolverPlugin {
         #[cfg(feature = "3d")]
         app.register_required_components::<SphericalJoint, super::impulse_joints::SphericalJointImpulses>();
         app.register_required_components::<DistanceJoint, DistanceJointImpulses>();
+        app.init_resource::<ActiveJoints<FixedJoint>>()
+            .init_resource::<ActiveJoints<RevoluteJoint>>()
+            .init_resource::<ActiveJoints<DistanceJoint>>();
+        #[cfg(feature = "3d")]
+        app.init_resource::<ActiveJoints<SphericalJoint>>();
         let physics = app
             .get_schedule_mut(PhysicsSchedule)
             .expect("add PhysicsSchedule first");
@@ -173,11 +178,11 @@ impl Plugin for SolverPlugin {
                 .in_set(SolverSystems::PrepareJoints),
             // Each writes to its own kind of joint, as other solvers do to theirs.
             (
-                write_impulse_joint_forces::<FixedJoint>,
-                write_impulse_joint_forces::<RevoluteJoint>,
+                finish_impulse_joints::<FixedJoint>,
+                finish_impulse_joints::<RevoluteJoint>,
                 #[cfg(feature = "3d")]
-                write_impulse_joint_forces::<SphericalJoint>,
-                write_impulse_joint_forces::<DistanceJoint>,
+                finish_impulse_joints::<SphericalJoint>,
+                finish_impulse_joints::<DistanceJoint>,
             )
                 .chain()
                 .ambiguous_with_all()

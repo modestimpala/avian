@@ -56,6 +56,8 @@ pub struct FixedJoint {
 }
 
 impl EntityConstraint<2> for FixedJoint {
+    const MOVES_BODIES: bool = false;
+
     fn entities(&self) -> [Entity; 2] {
         [self.body1, self.body2]
     }

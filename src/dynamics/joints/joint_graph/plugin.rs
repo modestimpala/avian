@@ -144,13 +144,19 @@ fn add_joint_to_graph<
     let [body1, body2] = joint.entities();
 
     // Add the joint to the joint graph.
-    let joint_edge = JointGraphEdge::new(entity, body1, body2, collision_disabled);
+    let joint_edge = JointGraphEdge {
+        moves_bodies: T::MOVES_BODIES,
+        ..JointGraphEdge::new(entity, body1, body2, collision_disabled)
+    };
     let joint_id = joint_graph.add_joint(joint_edge);
 
-    // The bodies are now constrained, so the XPBD solver must project their velocities.
+    // The bodies are now moved by a constraint, so the XPBD solver must project their
+    // velocities.
     #[cfg(feature = "xpbd_joints")]
-    for body in [body1, body2] {
-        commands.entity(body).try_insert(XpbdVelocityProjection);
+    if T::MOVES_BODIES {
+        for body in [body1, body2] {
+            commands.entity(body).try_insert(XpbdVelocityProjection);
+        }
     }
 
     // Record the change.
@@ -177,10 +183,10 @@ fn remove_joint_from_graph<E: EventPattern<Event: EntityEvent>>(
     // Remove the joint from the joint graph.
     joint_graph.remove_joint(entity);
 
-    // Stop projecting XPBD velocities for bodies that are no longer constrained by any joint.
+    // Stop projecting XPBD velocities for bodies that no joint moves any longer.
     #[cfg(feature = "xpbd_joints")]
     for body in bodies {
-        if joint_graph.joints_of(body).next().is_none() {
+        if !JointGraphEdge::any_moves(&joint_graph, body) {
             commands.entity(body).try_remove::<XpbdVelocityProjection>();
         }
     }
@@ -326,11 +332,13 @@ fn on_change_joint_entities<T: Component + EntityConstraint<2>>(
                 // Move XPBD velocity projection over to the new bodies.
                 #[cfg(feature = "xpbd_joints")]
                 {
-                    for body in [body1, body2] {
-                        commands.entity(body).try_insert(XpbdVelocityProjection);
+                    if T::MOVES_BODIES {
+                        for body in [body1, body2] {
+                            commands.entity(body).try_insert(XpbdVelocityProjection);
+                        }
                     }
                     for body in old_bodies {
-                        if joint_graph.joints_of(body).next().is_none() {
+                        if !JointGraphEdge::any_moves(&joint_graph, body) {
                             commands.entity(body).try_remove::<XpbdVelocityProjection>();
                         }
                     }

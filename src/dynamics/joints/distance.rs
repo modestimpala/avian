@@ -39,6 +39,8 @@ pub struct DistanceJoint {
 }
 
 impl EntityConstraint<2> for DistanceJoint {
+    const MOVES_BODIES: bool = false;
+
     fn entities(&self) -> [Entity; 2] {
         [self.body1, self.body2]
     }

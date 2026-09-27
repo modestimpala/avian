@@ -19,11 +19,7 @@ use crate::{
     utils::{MIN_PAR_ITER_ENTITIES, ParallelQueryForEach},
 };
 #[cfg(feature = "3d")]
-use crate::{
-    MatExt, QuatExt,
-    dynamics::integrator::{IntegrationSystems, integrate_positions},
-    prelude::SubstepSchedule,
-};
+use crate::{MatExt, QuatExt};
 
 /// A plugin for managing solver bodies stored in the [`SolverBodies`] resource.
 ///
@@ -136,15 +132,9 @@ impl Plugin for SolverBodyPlugin {
             writeback_solver_bodies.in_set(SolverSystems::Finalize),
         );
 
-        // Update the world-space angular inertia of solver bodies right after position integration
-        // in the substepping loop.
-        #[cfg(feature = "3d")]
-        app.add_systems(
-            SubstepSchedule,
-            update_solver_body_angular_inertia
-                .in_set(IntegrationSystems::Position)
-                .after(integrate_positions),
-        );
+        // The world-space angular inertia of a solver body is as it was when the step began
+        // for the whole of the step: contacts find their effective masses from it once,
+        // before the substepping loop, and must apply their impulses by the same.
     }
 
     fn finish(&self, app: &mut App) {
@@ -365,24 +355,6 @@ fn writeback_solver_bodies(
     );
 
     diagnostics.finalize += start.elapsed();
-}
-
-#[cfg(feature = "3d")]
-pub(crate) fn update_solver_body_angular_inertia(
-    mut solver_bodies: ResMut<SolverBodies>,
-    mut query: Query<(&SolverBodyIndex, &ComputedAngularInertia, &Rotation)>,
-) {
-    let access = solver_bodies.access();
-
-    query.par_for_each_mut(
-        MIN_PAR_ITER_ENTITIES,
-        |(index, angular_inertia, rotation)| {
-            // SAFETY: Each entity has a unique, valid solver body index, so the writes below
-            //         target disjoint inertias.
-            let inertia = unsafe { access.inertia_unchecked_mut(*index) };
-            inertia.update_effective_inv_angular_inertia(angular_inertia, rotation.0);
-        },
-    );
 }
 
 #[cfg(test)]

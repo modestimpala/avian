@@ -1,6 +1,6 @@
-#[cfg(feature = "3d")]
-use super::solve3;
 use super::{ImpulseJoint, Pass, PointImpulses, turn};
+#[cfg(feature = "3d")]
+use super::{eigen, size3, solve3};
 use crate::{
     dynamics::solver::solver_body::{SolverBody, SolverBodyInertia},
     prelude::*,
@@ -21,15 +21,46 @@ pub struct FixedJointImpulses {
     /// The rotation taking the second body's joint frame to the first's, as the step began.
     #[cfg(feature = "3d")]
     pub rotation_difference: Quat,
-    /// The angular compliance for each direction of rotation in the world, if it differs
-    /// by direction.
+    /// The angular compliance, if it differs by direction.
     #[cfg(feature = "3d")]
-    pub angle_compliance: Option<SymmetricTensor>,
+    pub angle_compliance: Option<PrincipalCompliance>,
     /// The angular impulse a substep gives the second body, and takes from the first.
     /// Kept from one substep and step to the next for warm starting.
     pub angular_impulse: AngularVector,
     /// The angular impulses of the step's substeps so far, added up.
     pub total_angular_impulse: AngularVector,
+}
+
+/// A compliance that differs by direction, as the directions it is least and most in
+/// and what it is in each: a spring too stiff for the substep is softened along those,
+/// whichever way they lie in the world.
+#[cfg(feature = "3d")]
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serialize", reflect(Serialize, Deserialize))]
+#[reflect(Debug, PartialEq)]
+pub struct PrincipalCompliance {
+    /// The compliance these were found for, in the first body's joint basis.
+    pub of: SymmetricTensor,
+    /// The compliance in each principal direction.
+    pub values: Vec3,
+    /// The principal directions, in the first body's joint basis.
+    pub local: Mat3,
+    /// The principal directions in the world, as the step began.
+    pub axes: Mat3,
+}
+
+#[cfg(feature = "3d")]
+impl PrincipalCompliance {
+    /// What is added to the inverse effective mass `k` in the world, with no direction
+    /// stiffer than a substep can follow.
+    fn give(&self, k: SymmetricTensor, pass: &Pass) -> SymmetricTensor {
+        let least = pass.give(0.0, size3(k));
+        let give = (self.values / (pass.delta_secs * pass.delta_secs)).max(Vec3::splat(least));
+        SymmetricTensor::from_mat3_unchecked(
+            self.axes * Mat3::from_diagonal(give) * self.axes.transpose(),
+        )
+    }
 }
 
 impl ImpulseJoint for FixedJoint {
@@ -57,10 +88,23 @@ impl ImpulseJoint for FixedJoint {
         {
             data.rotation_difference = frame1 * frame2.inverse();
             data.angle_compliance = self.angle_compliance_tensor.map(|compliance| {
-                let basis = Mat3::from_quat(frame1);
-                SymmetricTensor::from_mat3_unchecked(
-                    basis * compliance.to_mat3() * basis.transpose(),
-                )
+                // The directions are found again only when the compliance has changed.
+                let found = data
+                    .angle_compliance
+                    .filter(|found| found.of == compliance)
+                    .unwrap_or_else(|| {
+                        let (values, local) = eigen(compliance);
+                        PrincipalCompliance {
+                            of: compliance,
+                            values,
+                            local,
+                            axes: local,
+                        }
+                    });
+                PrincipalCompliance {
+                    axes: Mat3::from_quat(frame1) * found.local,
+                    ..found
+                }
             });
         }
     }
@@ -95,6 +139,7 @@ impl ImpulseJoint for FixedJoint {
             pass.step(
                 |give, rhs| (k + give).recip_or_zero() * rhs,
                 self.angle_compliance,
+                k,
                 speed,
                 error,
                 data.angular_impulse,
@@ -109,7 +154,7 @@ impl ImpulseJoint for FixedJoint {
             match data.angle_compliance {
                 // A spring, softer one way than another.
                 Some(compliance) => {
-                    let give = compliance / (pass.delta_secs * pass.delta_secs);
+                    let give = compliance.give(k, pass);
                     -solve3(
                         k + give,
                         speed + error / pass.delta_secs + give * data.angular_impulse,
@@ -118,6 +163,7 @@ impl ImpulseJoint for FixedJoint {
                 None => pass.step(
                     |give, rhs| solve3(k + SymmetricTensor::from_diagonal(Vec3::splat(give)), rhs),
                     self.angle_compliance,
+                    size3(k),
                     speed,
                     error,
                     data.angular_impulse,

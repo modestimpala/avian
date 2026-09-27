@@ -33,6 +33,8 @@ mod spherical;
 
 pub use distance::DistanceJointImpulses;
 pub use fixed::FixedJointImpulses;
+#[cfg(feature = "3d")]
+pub use fixed::PrincipalCompliance;
 pub use point::PointImpulses;
 pub use revolute::RevoluteJointImpulses;
 #[cfg(feature = "3d")]
@@ -54,10 +56,10 @@ use crate::{
 use bevy::{ecs::component::Mutable, prelude::*};
 
 /// A joint between two bodies that is solved with velocity impulses.
-pub trait ImpulseJoint: Component + EntityConstraint<2> {
+pub trait ImpulseJoint: Component + EntityConstraint<2> + Clone {
     /// What the solver keeps for the joint: where it stood when the step began, and the
     /// impulses it holds its bodies with.
-    type Impulses: Component<Mutability = Mutable> + Default;
+    type Impulses: Component<Mutability = Mutable> + Default + Clone;
 
     /// Records where the joint stands as the step begins, and forgets the last step's
     /// totals. The impulses themselves are kept, for warm starting.
@@ -95,6 +97,9 @@ pub struct Pass {
     pub use_bias: bool,
     /// How a constraint with no compliance of its own is held in this pass.
     pub softness: SoftnessCoefficients,
+    /// The stiffest spring a substep can follow: what it adds to the inverse effective
+    /// mass it works against, as a share of that.
+    pub follows: f32,
     /// The length of the substep.
     pub delta_secs: f32,
 }
@@ -118,19 +123,36 @@ impl Pass {
             } else {
                 Self::RELAXED
             },
+            follows: (core::f32::consts::TAU * frequency * delta_secs)
+                .powi(2)
+                .recip(),
             delta_secs,
         }
+    }
+
+    /// What is added to the inverse effective mass for a spring of some compliance, for
+    /// how much an impulse along it moves anything at the most: the [size](size3) of its
+    /// inverse effective mass.
+    ///
+    /// A spring stiffer than a substep can follow is no spring to the solver. Solved as
+    /// one, it would be asked to close its whole error every substep, with nothing to
+    /// take out the speed that adds, and light bodies on it buzz and spin. It is solved
+    /// as the stiffest spring that the substep can follow.
+    pub(super) fn give(&self, compliance: f32, stiffest: f32) -> f32 {
+        (compliance / (self.delta_secs * self.delta_secs)).max(self.follows * stiffest)
     }
 
     /// The step in impulse that answers a constraint's speed and error, for what it has
     /// given so far.
     ///
     /// `solve` applies the inverse of a matrix to a vector: the inverse effective mass,
-    /// with the given amount added to its diagonal.
+    /// with the given amount added to its diagonal. `stiffest` is the size of the inverse
+    /// effective mass.
     pub(super) fn step<V>(
         &self,
         solve: impl Fn(f32, V) -> V,
         compliance: f32,
+        stiffest: f32,
         speed: V,
         error: V,
         given: V,
@@ -144,7 +166,7 @@ impl Pass {
     {
         if compliance > 0.0 {
             // A spring, integrated implicitly.
-            let give = compliance / (self.delta_secs * self.delta_secs);
+            let give = self.give(compliance, stiffest);
             -solve(give, speed + error * self.delta_secs.recip() + given * give)
         } else {
             -solve(0.0, speed + error * self.softness.bias) * self.softness.mass_scale
@@ -172,6 +194,7 @@ impl Pass {
             self.step(
                 |give, rhs| rhs / (k + give),
                 compliance,
+                k,
                 closing,
                 room,
                 given,
@@ -270,44 +293,136 @@ impl Turning {
     }
 }
 
+/// How much an impulse moves anything at the most, by an inverse effective mass: no less
+/// than its largest eigenvalue, no more than that by the square root of its rank, and the
+/// same however the bodies are turned in the world.
+pub(super) fn size2(k: Mat2) -> f32 {
+    (k.x_axis.length_squared() + k.y_axis.length_squared()).sqrt()
+}
+
+/// How much an impulse moves anything at the most, by an inverse effective mass: no less
+/// than its largest eigenvalue, no more than that by the square root of its rank, and the
+/// same however the bodies are turned in the world.
+#[cfg(feature = "3d")]
+pub(super) fn size3(k: SymmetricTensor) -> f32 {
+    let across = k.m01 * k.m01 + k.m02 * k.m02 + k.m12 * k.m12;
+    (k.m00 * k.m00 + k.m11 * k.m11 + k.m22 * k.m22 + 2.0 * across).sqrt()
+}
+
+/// How small a share of a scaled matrix a direction may be and still be one that impulses
+/// move anything in. Smaller is what rounding leaves of nothing.
+const NOTHING: f32 = 1e-6;
+
 /// The inverse of `k` applied to `rhs`, in the directions `k` can move anything in.
 ///
 /// Locked axes and bodies that cannot move leave directions where no impulse has any
-/// effect. None is given there.
+/// effect. None is given there. A direction that little moves in is not one of them: a
+/// thin rod turns about its length thousands of times as readily as across it, and is
+/// held across it all the same. So `k` is first scaled to a diagonal of ones, where how
+/// near it is to having such a direction no longer depends on the bodies' proportions.
 pub(super) fn solve2(k: Mat2, rhs: Vec2) -> Vec2 {
-    let scale = k.x_axis.x.max(k.y_axis.y);
-    if scale <= 0.0 {
+    let diagonal = Vec2::new(k.x_axis.x, k.y_axis.y);
+    if diagonal.max_element() <= 0.0 {
         return Vec2::ZERO;
     }
-    if k.determinant() > 1e-6 * scale * scale {
-        return k.inverse() * rhs;
+    if diagonal.min_element() > 0.0 {
+        let scale = diagonal.map(f32::sqrt).recip();
+        let across = k.x_axis.y * scale.x * scale.y;
+        let determinant = 1.0 - across * across;
+        if determinant > NOTHING {
+            let rhs = rhs * scale;
+            let solved = Vec2::new(rhs.x - across * rhs.y, rhs.y - across * rhs.x);
+            return solved / determinant * scale;
+        }
     }
     // One direction is left: k = l v v^T, whose trace is l.
-    let trace = k.x_axis.x + k.y_axis.y;
+    let trace = diagonal.x + diagonal.y;
     k * rhs / (trace * trace)
 }
 
 /// The inverse of `k` applied to `rhs`, in the directions `k` can move anything in.
 ///
 /// Locked axes and bodies that cannot move leave directions where no impulse has any
-/// effect. None is given there.
+/// effect. None is given there. A direction that little moves in is not one of them: a
+/// thin rod turns about its length thousands of times as readily as across it, and is
+/// held across it all the same. So `k` is first scaled to a diagonal of ones, where how
+/// near it is to having such a direction no longer depends on the bodies' proportions.
 #[cfg(feature = "3d")]
 pub(super) fn solve3(k: SymmetricTensor, rhs: Vec3) -> Vec3 {
-    let scale = k.diagonal().max_element();
-    if scale <= 0.0 {
+    let diagonal = k.diagonal();
+    if diagonal.max_element() <= 0.0 {
         return Vec3::ZERO;
     }
-    if k.determinant() > 1e-6 * scale * scale * scale {
-        return k.inverse() * rhs;
+    // Nothing moves along an axis with nothing on the diagonal: k is positive
+    // semidefinite, so its row and column are nothing too.
+    let scale = Vec3::select(
+        diagonal.cmpgt(Vec3::ZERO),
+        diagonal.map(f32::sqrt).recip(),
+        Vec3::ZERO,
+    );
+    let scaled = SymmetricTensor::new(
+        k.m00 * scale.x * scale.x,
+        k.m01 * scale.x * scale.y,
+        k.m02 * scale.x * scale.z,
+        k.m11 * scale.y * scale.y,
+        k.m12 * scale.y * scale.z,
+        k.m22 * scale.z * scale.z,
+    );
+    if scaled.determinant() > 1e-4 {
+        return scaled.inverse() * (rhs * scale) * scale;
     }
-    let eigen = glam_matrix_extras::SymmetricEigen3::new(k);
+    let (values, directions) = eigen(scaled);
+    if values.min_element() > NOTHING {
+        // Every direction moves something, some of them little.
+        return (0..3)
+            .map(|i| directions.col(i) * (directions.col(i).dot(rhs * scale) / values[i]))
+            .sum::<Vec3>()
+            * scale;
+    }
+    // Some direction moves nothing. What is asked for along it cannot be had, and what
+    // is left is solved as nearly as it can be.
+    let (values, directions) = eigen(k);
+    let least = values.max_element() * NOTHING;
     (0..3)
-        .filter(|&i| eigen.eigenvalues[i] > 1e-4 * scale)
-        .map(|i| {
-            let direction = eigen.eigenvectors.col(i);
-            direction * (direction.dot(rhs) / eigen.eigenvalues[i])
-        })
+        .filter(|&i| values[i] > least)
+        .map(|i| directions.col(i) * (directions.col(i).dot(rhs) / values[i]))
         .sum()
+}
+
+/// The eigenvalues of a symmetric matrix and, in the columns of the other, their
+/// directions, by Jacobi's rotations: slower than a closed form, and as exact in the
+/// small eigenvalues as in the large.
+#[cfg(feature = "3d")]
+pub(super) fn eigen(k: SymmetricTensor) -> (Vec3, Mat3) {
+    let mut a = k.to_mat3();
+    let mut directions = Mat3::IDENTITY;
+    for _ in 0..8 {
+        let mut turned = false;
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            let across = a.col(q)[p];
+            let (first, second) = (a.col(p)[p], a.col(q)[q]);
+            if across.abs() <= f32::EPSILON * 0.5 * (first.abs() + second.abs()) {
+                continue;
+            }
+            // The turn in the plane of the two axes that leaves nothing across them.
+            let theta = (second - first) / (2.0 * across);
+            let tangent = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+            let cosine = (tangent * tangent + 1.0).sqrt().recip();
+            let sine = tangent * cosine;
+            let mut turn = Mat3::IDENTITY;
+            turn.col_mut(p)[p] = cosine;
+            turn.col_mut(q)[q] = cosine;
+            turn.col_mut(q)[p] = sine;
+            turn.col_mut(p)[q] = -sine;
+            a = turn.transpose() * a * turn;
+            directions *= turn;
+            turned = true;
+        }
+        if !turned {
+            break;
+        }
+    }
+    (Vec3::new(a.x_axis.x, a.y_axis.y, a.z_axis.z), directions)
 }
 
 /// Gives the second body an angular impulse, and takes it from the first.
@@ -320,60 +435,112 @@ pub(super) fn turn(
     body2.angular_velocity += inertia2.effective_inv_angular_inertia() * impulse;
 }
 
-/// The two bodies of a joint, with stand-ins for those the solver does not move.
-fn for_bodies(
-    solver_bodies: &mut SolverBodies,
-    indices: &Query<&SolverBodyIndex, Without<RigidBodyDisabled>>,
-    [entity1, entity2]: [Entity; 2],
-    solve: impl FnOnce([&mut SolverBody; 2], [&SolverBodyInertia; 2]),
-) {
-    let index1 = indices
-        .get(entity1)
-        .copied()
-        .unwrap_or(SolverBodyIndex::INVALID);
-    let index2 = indices
-        .get(entity2)
-        .copied()
-        .unwrap_or(SolverBodyIndex::INVALID);
-    if index1 == index2 {
-        return;
-    }
-
-    let mut dummy_body1 = SolverBody::DUMMY;
-    let mut dummy_body2 = SolverBody::DUMMY;
-    let (mut body1, mut inertia1) = (&mut dummy_body1, &SolverBodyInertia::DUMMY);
-    let (mut body2, mut inertia2) = (&mut dummy_body2, &SolverBodyInertia::DUMMY);
-
-    let access = solver_bodies.access();
-    // SAFETY: The two jointed bodies are distinct, and joints are processed serially here.
-    let (b1, b2) = unsafe { access.get_pair_unchecked_mut(index1, index2) };
-    if let Some((body, inertia)) = b1 {
-        body1 = body;
-        inertia1 = inertia;
-    }
-    if let Some((body, inertia)) = b2 {
-        body2 = body;
-        inertia2 = inertia;
-    }
-
-    // If a body has a higher dominance, it is treated as a static or kinematic body.
-    match (inertia1.dominance() - inertia2.dominance()).cmp(&0) {
-        Ordering::Greater => inertia1 = &SolverBodyInertia::DUMMY,
-        Ordering::Less => inertia2 = &SolverBodyInertia::DUMMY,
-        _ => {}
-    }
-
-    solve([body1, body2], [inertia1, inertia2]);
+/// The joints of one kind that are solved this step, each with its bodies found and what
+/// the solver keeps for it, side by side: the passes of a substep go through them
+/// without asking the world for anything.
+#[derive(Resource)]
+pub struct ActiveJoints<J: ImpulseJoint> {
+    joints: Vec<ActiveJoint<J>>,
 }
 
-/// Records where each joint stands as the step begins.
+impl<J: ImpulseJoint> Default for ActiveJoints<J> {
+    fn default() -> Self {
+        Self { joints: Vec::new() }
+    }
+}
+
+impl<J: ImpulseJoint> ActiveJoints<J> {
+    /// How many joints are solved this step.
+    pub fn len(&self) -> usize {
+        self.joints.len()
+    }
+
+    /// Whether no joint is solved this step.
+    pub fn is_empty(&self) -> bool {
+        self.joints.is_empty()
+    }
+}
+
+struct ActiveJoint<J: ImpulseJoint> {
+    entity: Entity,
+    bodies: [SolverBodyIndex; 2],
+    joint: J,
+    impulses: J::Impulses,
+}
+
+impl<J: ImpulseJoint> ActiveJoint<J> {
+    /// The joint's two bodies, with stand-ins for those the solver does not move.
+    fn solve(
+        &mut self,
+        solver_bodies: &mut SolverBodies,
+        solve: impl FnOnce(&J, [&mut SolverBody; 2], [&SolverBodyInertia; 2], &mut J::Impulses),
+    ) {
+        let mut dummy_body1 = SolverBody::DUMMY;
+        let mut dummy_body2 = SolverBody::DUMMY;
+        let (mut body1, mut inertia1) = (&mut dummy_body1, &SolverBodyInertia::DUMMY);
+        let (mut body2, mut inertia2) = (&mut dummy_body2, &SolverBodyInertia::DUMMY);
+
+        let access = solver_bodies.access();
+        // SAFETY: The two jointed bodies are distinct, and joints are processed serially here.
+        let (b1, b2) = unsafe { access.get_pair_unchecked_mut(self.bodies[0], self.bodies[1]) };
+        if let Some((body, inertia)) = b1 {
+            body1 = body;
+            inertia1 = inertia;
+        }
+        if let Some((body, inertia)) = b2 {
+            body2 = body;
+            inertia2 = inertia;
+        }
+
+        // If a body has a higher dominance, it is treated as a static or kinematic body.
+        match (inertia1.dominance() - inertia2.dominance()).cmp(&0) {
+            Ordering::Greater => inertia1 = &SolverBodyInertia::DUMMY,
+            Ordering::Less => inertia2 = &SolverBodyInertia::DUMMY,
+            _ => {}
+        }
+
+        solve(
+            &self.joint,
+            [body1, body2],
+            [inertia1, inertia2],
+            &mut self.impulses,
+        );
+    }
+}
+
+/// Finds the joints to solve this step, and records where each stands as it begins. A
+/// joint whose bodies are at rest carries no load that is known.
 pub fn prepare_impulse_joints<J: ImpulseJoint>(
     bodies: Query<RigidBodyQueryReadOnly, Without<RigidBodyDisabled>>,
-    mut joints: Query<(&J, &mut J::Impulses), (Without<RigidBody>, Without<JointDisabled>)>,
+    indices: Query<&SolverBodyIndex, Without<RigidBodyDisabled>>,
+    mut joints: Query<
+        (Entity, &J, &mut J::Impulses, Option<&mut JointForces>),
+        (Without<RigidBody>, Without<JointDisabled>),
+    >,
+    mut active: ResMut<ActiveJoints<J>>,
 ) {
-    for (joint, mut impulses) in &mut joints {
-        if let Ok([body1, body2]) = bodies.get_many(joint.entities()) {
+    active.joints.clear();
+    for (entity, joint, mut impulses, forces) in &mut joints {
+        let entities = joint.entities();
+        let [index1, index2] = entities.map(|body| {
+            indices
+                .get(body)
+                .copied()
+                .unwrap_or(SolverBodyIndex::INVALID)
+        });
+        let at_rest = index1 == index2;
+        if !at_rest && let Ok([body1, body2]) = bodies.get_many(entities) {
             joint.prepare([&body1, &body2], &mut impulses);
+            active.joints.push(ActiveJoint {
+                entity,
+                bodies: [index1, index2],
+                joint: joint.clone(),
+                impulses: impulses.clone(),
+            });
+        } else if let Some(mut forces) = forces
+            && *forces != JointForces::new()
+        {
+            *forces = JointForces::new();
         }
     }
 }
@@ -381,18 +548,14 @@ pub fn prepare_impulse_joints<J: ImpulseJoint>(
 /// Applies the impulses each joint held its bodies with last.
 pub fn warm_start_impulse_joints<J: ImpulseJoint>(
     mut solver_bodies: ResMut<SolverBodies>,
-    indices: Query<&SolverBodyIndex, Without<RigidBodyDisabled>>,
-    mut joints: Query<(&J, &mut J::Impulses), (Without<RigidBody>, Without<JointDisabled>)>,
+    mut active: ResMut<ActiveJoints<J>>,
     solver_config: Res<SolverConfig>,
 ) {
     let coefficient = solver_config.warm_start_coefficient;
-    for (joint, mut impulses) in &mut joints {
-        for_bodies(
-            &mut solver_bodies,
-            &indices,
-            joint.entities(),
-            |bodies, inertias| joint.warm_start(bodies, inertias, &mut impulses, coefficient),
-        );
+    for active in &mut active.joints {
+        active.solve(&mut solver_bodies, |joint, bodies, inertias, impulses| {
+            joint.warm_start(bodies, inertias, impulses, coefficient);
+        });
     }
 }
 
@@ -400,37 +563,172 @@ pub fn warm_start_impulse_joints<J: ImpulseJoint>(
 /// what that added.
 pub fn solve_impulse_joints<J: ImpulseJoint, const USE_BIAS: bool>(
     mut solver_bodies: ResMut<SolverBodies>,
-    indices: Query<&SolverBodyIndex, Without<RigidBodyDisabled>>,
-    mut joints: Query<(&J, &mut J::Impulses), (Without<RigidBody>, Without<JointDisabled>)>,
+    mut active: ResMut<ActiveJoints<J>>,
     solver_config: Res<SolverConfig>,
     time: Res<Time>,
 ) {
     let delta_secs = time.delta_secs();
-    if delta_secs <= 0.0 {
+    if delta_secs <= 0.0 || active.joints.is_empty() {
         return;
     }
     let pass = Pass::new(USE_BIAS, &solver_config, delta_secs);
-    for (joint, mut impulses) in &mut joints {
-        for_bodies(
-            &mut solver_bodies,
-            &indices,
-            joint.entities(),
-            |bodies, inertias| joint.solve(bodies, inertias, &mut impulses, &pass),
-        );
+    for active in &mut active.joints {
+        active.solve(&mut solver_bodies, |joint, bodies, inertias, impulses| {
+            joint.solve(bodies, inertias, impulses, &pass);
+        });
     }
 }
 
-/// Reports the force and the torque about its anchor that each joint applied to its first
-/// body over the step.
-pub fn write_impulse_joint_forces<J: ImpulseJoint>(
-    mut joints: Query<(&J::Impulses, &mut JointForces), With<J>>,
+/// Keeps the impulses each joint holds its bodies with for the next step's warm start,
+/// and reports the force and the torque about its anchor that the joint applied to its
+/// first body over the step.
+pub fn finish_impulse_joints<J: ImpulseJoint>(
+    mut joints: Query<(&mut J::Impulses, Option<&mut JointForces>), With<J>>,
+    active: Res<ActiveJoints<J>>,
     time: Res<Time>,
 ) {
     let per_second = time.delta_secs().recip_or_zero();
-    for (impulses, mut forces) in &mut joints {
-        let (linear, angular, motor) = J::totals(impulses);
-        forces.set_force(-linear * per_second);
-        forces.set_torque(-angular * per_second);
-        forces.set_motor_force(motor * per_second);
+    for active in &active.joints {
+        let Ok((mut impulses, forces)) = joints.get_mut(active.entity) else {
+            continue;
+        };
+        impulses.clone_from(&active.impulses);
+        if let Some(mut forces) = forces {
+            let (linear, angular, motor) = J::totals(&active.impulses);
+            forces.set_force(-linear * per_second);
+            forces.set_torque(-angular * per_second);
+            forces.set_motor_force(motor * per_second);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A turn of the axes, to stand things at no special angle.
+    #[cfg(feature = "3d")]
+    fn askew() -> Mat3 {
+        Mat3::from_quat(Quat::from_euler(EulerRot::XYZ, 0.4, -0.7, 1.1))
+    }
+
+    #[cfg(feature = "3d")]
+    fn turned(values: Vec3, turn: Mat3) -> SymmetricTensor {
+        SymmetricTensor::from_mat3_unchecked(turn * Mat3::from_diagonal(values) * turn.transpose())
+    }
+
+    /// A rod is held across its length however thin it is, along the axes or askew of
+    /// them: what it turns least readily in is still a direction it turns in.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_thin_rod_is_held_in_every_direction() {
+        // The inverse inertia of 1 kg rods 2 m long: 2 cm square, 1 cm and 3 mm.
+        for readiest in [15_000.0, 60_000.0, 660_000.0] {
+            let values = Vec3::new(readiest, 3.0, 3.0);
+            for turn in [Mat3::IDENTITY, askew()] {
+                let k = turned(values, turn);
+                for across in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let rhs = turn * across;
+                    let solved = solve3(k, rhs);
+                    let expected = turn * (across / values);
+                    assert!(
+                        solved.distance(expected) < 0.02 * expected.length(),
+                        "a rod turning {readiest} times as readily about its length: \
+                         {solved} for {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Where nothing can move, no impulse is given, and what can move is solved as if
+    /// that direction were not there.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_direction_nothing_moves_in_is_left_out() {
+        for turn in [Mat3::IDENTITY, askew()] {
+            let k = turned(Vec3::new(4.0, 0.0, 0.5), turn);
+            let solved = solve3(k, turn * Vec3::new(2.0, 7.0, 1.0));
+            let expected = turn * Vec3::new(0.5, 0.0, 2.0);
+            assert!(solved.distance(expected) < 1e-3, "{solved} for {expected}");
+        }
+    }
+
+    /// How much an impulse moves anything at the most is the same however things are
+    /// turned, and no less than the most it moves anything in any one direction.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn the_size_of_a_matrix_is_the_same_however_it_is_turned() {
+        for values in [Vec3::new(60_000.0, 3.0, 3.0), Vec3::new(2.0, 5.0, 0.0)] {
+            let size = size3(turned(values, Mat3::IDENTITY));
+            assert!(size >= values.max_element() && size <= values.max_element() * 1.74);
+            let askew = size3(turned(values, askew()));
+            assert!((askew - size).abs() < 1e-4 * size, "{askew} for {size}");
+        }
+    }
+
+    /// Against the same solved in double precision, for matrices from well conditioned to
+    /// very badly, at every angle: the solve is as exact as single precision allows.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn the_solve_is_as_exact_as_its_numbers_allow() {
+        use bevy::math::{DMat3, DQuat, DVec3};
+        let mut seed = 0x2545_f491_u32;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f64 / u32::MAX as f64
+        };
+        let mut worst = [0.0_f64; 2];
+        for _ in 0..20_000 {
+            let spread = 10f64.powf(random() * 5.0);
+            let values = DVec3::new(
+                spread * (0.5 + random()),
+                0.5 + random(),
+                (0.5 + random()) * spread.powf(random()),
+            );
+            let turn = DMat3::from_quat(
+                DQuat::from_euler(
+                    EulerRot::XYZ,
+                    random() * 6.0,
+                    random() * 6.0,
+                    random() * 6.0,
+                )
+                .normalize(),
+            );
+            let k = turn * DMat3::from_diagonal(values) * turn.transpose();
+            let rhs = DVec3::new(random() - 0.5, random() - 0.5, random() - 0.5);
+            // What single precision is given, solved exactly.
+            let given = SymmetricTensor::from_mat3_unchecked(k.as_mat3());
+            let exact = given.to_mat3().as_dmat3().inverse() * rhs.as_vec3().as_dvec3();
+            let error = |solved: Vec3| solved.as_dvec3().distance(exact) / exact.length();
+            worst[0] = worst[0].max(error(solve3(given, rhs.as_vec3())));
+            worst[1] = worst[1].max(error(given.inverse() * rhs.as_vec3()));
+        }
+        println!("worst error: scaled {:e}, plain {:e}", worst[0], worst[1]);
+        assert!(worst[0] < 0.02, "the solve was out by {}", worst[0]);
+    }
+
+    #[test]
+    fn two_directions_are_solved_as_three_are() {
+        let turn = Mat2::from_angle(0.6);
+        let turned = |values: Vec2| turn * Mat2::from_diagonal(values) * turn.transpose();
+        for values in [Vec2::new(60_000.0, 3.0), Vec2::new(2.0, 5.0)] {
+            let solved = solve2(turned(values), turn * Vec2::new(1.0, 1.0));
+            let expected = turn * values.recip();
+            assert!(
+                solved.distance(expected) < 0.02 * expected.length(),
+                "{solved} for {expected}"
+            );
+        }
+        let solved = solve2(turned(Vec2::new(4.0, 0.0)), turn * Vec2::new(2.0, 7.0));
+        let expected = turn * Vec2::new(0.5, 0.0);
+        assert!(solved.distance(expected) < 1e-3, "{solved} for {expected}");
+        let solved = solve2(
+            Mat2::from_diagonal(Vec2::new(0.0, 4.0)),
+            Vec2::new(7.0, 2.0),
+        );
+        assert!(solved.distance(Vec2::new(0.0, 0.5)) < 1e-6, "{solved}");
     }
 }

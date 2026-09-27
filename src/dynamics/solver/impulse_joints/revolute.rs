@@ -1,8 +1,8 @@
 use core::f32::consts::{PI, TAU};
 
-#[cfg(feature = "3d")]
-use super::solve2;
 use super::{ImpulseJoint, Pass, PointImpulses, Turning, turn};
+#[cfg(feature = "3d")]
+use super::{size2, solve2};
 use crate::{
     dynamics::{
         joints::MotorModel,
@@ -220,6 +220,7 @@ impl RevoluteJoint {
         let impulse = pass.step(
             |give, rhs| solve2(k + Mat2::from_diagonal(Vec2::splat(give)), rhs),
             self.align_compliance,
+            size2(k),
             across(body2.angular_velocity - body1.angular_velocity),
             // How the second axis is turned from the first.
             across(a1.cross(a2)),

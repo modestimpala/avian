@@ -1,6 +1,8 @@
+use super::Pass;
+#[cfg(feature = "2d")]
+use super::{size2, solve2};
 #[cfg(feature = "3d")]
-use super::solve3;
-use super::{Pass, solve2};
+use super::{size3, solve3};
 use crate::{
     dynamics::solver::solver_body::{SolverBody, SolverBodyInertia},
     prelude::*,
@@ -91,6 +93,10 @@ impl PointImpulses {
                 return solve3(k + SymmetricTensor::from_diagonal(Vec3::splat(give)), rhs);
             },
             compliance,
+            #[cfg(feature = "2d")]
+            size2(k),
+            #[cfg(feature = "3d")]
+            size3(k),
             speed,
             error,
             self.impulse,
@@ -125,6 +131,3 @@ fn push(
     body2.linear_velocity += inertia2.effective_inv_mass() * impulse;
     body2.angular_velocity += inertia2.effective_inv_angular_inertia() * cross(r2, impulse);
 }
-
-// The 2D solve is shared with constraints that are planar in 3D.
-const _: fn(Mat2, Vec2) -> Vec2 = solve2;
