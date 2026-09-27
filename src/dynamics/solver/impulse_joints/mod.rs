@@ -6,7 +6,7 @@
 //! substep. A joint solved here is [warm started], [solved] and [relaxed] next to the
 //! contacts instead, each answering the other's impulses before anything moves.
 //!
-//! The [`FixedJoint`] and the [`RevoluteJoint`] are solved this way.
+//! Every joint but the [`PrismaticJoint`] is solved this way.
 //!
 //! # Stiffness
 //!
@@ -24,13 +24,19 @@
 //! [solved]: crate::dynamics::solver::schedule::SubstepSolverSystems::SolveConstraints
 //! [relaxed]: crate::dynamics::solver::schedule::SubstepSolverSystems::Relax
 
+mod distance;
 mod fixed;
 mod point;
 mod revolute;
+#[cfg(feature = "3d")]
+mod spherical;
 
+pub use distance::DistanceJointImpulses;
 pub use fixed::FixedJointImpulses;
 pub use point::PointImpulses;
 pub use revolute::RevoluteJointImpulses;
+#[cfg(feature = "3d")]
+pub use spherical::SphericalJointImpulses;
 
 use core::cmp::Ordering;
 
@@ -144,6 +150,123 @@ impl Pass {
             -solve(0.0, speed + error * self.softness.bias) * self.softness.mass_scale
                 - given * self.softness.impulse_scale
         }
+    }
+}
+
+impl Pass {
+    /// What a limit holds with after this pass, for what it held with before. A limit only
+    /// pushes back in: `room` is how far within it the constraint is, `closing` how fast
+    /// the room grows, and `k` the inverse effective mass along it.
+    pub(super) fn limit(
+        &self,
+        k: f32,
+        compliance: f32,
+        room: f32,
+        closing: f32,
+        given: f32,
+    ) -> f32 {
+        let impulse = if room > 0.0 {
+            // Not there yet: stop only what would pass the limit within the substep.
+            -(closing + room / self.delta_secs) / k
+        } else {
+            self.step(
+                |give, rhs| rhs / (k + give),
+                compliance,
+                closing,
+                room,
+                given,
+            )
+        };
+        (given + impulse).max(0.0)
+    }
+}
+
+/// A turn of the second body about an axis on the first, as the bodies stand within a
+/// substep.
+pub(super) struct Turning {
+    /// The axis.
+    #[cfg(feature = "3d")]
+    pub axis: Vector,
+    /// The second body's angle about the axis from the first's.
+    pub angle: f32,
+    /// How fast an impulse about the axis turns the bodies apart: its inverse effective mass.
+    pub k: f32,
+}
+
+impl Turning {
+    pub fn new(
+        #[cfg(feature = "3d")] axis: Vector,
+        angle: f32,
+        [inertia1, inertia2]: [&SolverBodyInertia; 2],
+    ) -> Self {
+        let k = inertia1.effective_inv_angular_inertia() + inertia2.effective_inv_angular_inertia();
+        Self {
+            #[cfg(feature = "3d")]
+            axis,
+            angle,
+            #[cfg(feature = "2d")]
+            k,
+            #[cfg(feature = "3d")]
+            k: axis.dot(k * axis),
+        }
+    }
+
+    /// How fast the second body turns about the axis, past the first.
+    pub fn speed(&self, [body1, body2]: [&SolverBody; 2]) -> f32 {
+        let speed = body2.angular_velocity - body1.angular_velocity;
+        #[cfg(feature = "2d")]
+        return speed;
+        #[cfg(feature = "3d")]
+        return speed.dot(self.axis);
+    }
+
+    /// An impulse about the axis.
+    pub fn about(&self, impulse: f32) -> AngularVector {
+        #[cfg(feature = "2d")]
+        return impulse;
+        #[cfg(feature = "3d")]
+        return self.axis * impulse;
+    }
+
+    /// Keeps the angle within its limits, by the impulses `lower` about the axis and
+    /// `upper` against it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn limit(
+        &self,
+        [body1, body2]: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
+        limit: AngleLimit,
+        compliance: f32,
+        lower: &mut f32,
+        upper: &mut f32,
+        pass: &Pass,
+    ) {
+        if self.k <= f32::EPSILON {
+            return;
+        }
+        let held = pass.limit(
+            self.k,
+            compliance,
+            self.angle - limit.min,
+            self.speed([&*body1, &*body2]),
+            *lower,
+        );
+        turn(
+            [&mut *body1, &mut *body2],
+            inertias,
+            self.about(held - *lower),
+        );
+        *lower = held;
+
+        let held = pass.limit(
+            self.k,
+            compliance,
+            limit.max - self.angle,
+            -self.speed([&*body1, &*body2]),
+            *upper,
+        );
+        turn([body1, body2], inertias, self.about(*upper - held));
+        *upper = held;
     }
 }
 

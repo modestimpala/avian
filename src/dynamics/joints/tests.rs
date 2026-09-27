@@ -1163,3 +1163,101 @@ fn a_fixed_joint_reports_the_load_on_its_first_body() {
         assert!(sag.abs() < 0.005, "the weight sagged {sag} m");
     }
 }
+
+/// A weight on a rope hangs at the rope's length, and the rope pulls its support down
+/// with the weight.
+#[test]
+fn a_rope_holds_a_weight_at_its_length() {
+    let mut app = create_app();
+    app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+    app.finish();
+    let support = app
+        .world_mut()
+        .spawn((RigidBody::Static, Position(RVector::ZERO)))
+        .id();
+    // Let go a little way up and to the side, with the rope slack.
+    let weight = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Position(RVector::X * 0.3 + RVector::NEG_Y * 0.8),
+            Mass(2.0),
+            #[cfg(feature = "2d")]
+            AngularInertia(0.1),
+            #[cfg(feature = "3d")]
+            AngularInertia::new(Vec3::splat(0.1)),
+            LinearDamping(2.0),
+            SleepingDisabled,
+        ))
+        .id();
+    let rope = app
+        .world_mut()
+        .spawn((
+            DistanceJoint::new(support, weight).with_limits(0.0, 1.0),
+            JointForces::new(),
+        ))
+        .id();
+    let mut furthest: f32 = 0.0;
+    for _ in 0..(6.0 / TIMESTEP) as usize {
+        app.update();
+        let at = app.world().get::<Position>(weight).unwrap().0;
+        furthest = furthest.max(at.length() as f32);
+    }
+    let at = app.world().get::<Position>(weight).unwrap().0;
+    assert!(furthest < 1.01, "the rope stretched to {furthest} m");
+    assert!(
+        at.distance(RVector::NEG_Y) < 0.02,
+        "the weight came to rest at {at}"
+    );
+    let force = app.world().get::<JointForces>(rope).unwrap().force();
+    assert!(
+        force.distance(Vector::NEG_Y * 19.62) < 0.4,
+        "the rope pulls its support with {force}"
+    );
+}
+
+/// A ball joint keeps its anchors together and its swing within its limit.
+#[cfg(feature = "3d")]
+#[test]
+fn a_ball_joint_holds_its_anchor_and_its_swing() {
+    let mut app = create_app();
+    app.insert_resource(Gravity(Vector::NEG_Y * 9.81));
+    app.finish();
+    let support = app
+        .world_mut()
+        .spawn((RigidBody::Static, Position(RVector::ZERO)))
+        .id();
+    // A rod held out level by its end, along the axis the swing is measured by, free to
+    // fall as far as the joint lets it swing.
+    let rod = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Position(RVector::Z * 0.5),
+            Mass(1.0),
+            AngularInertia::new(Vec3::new(0.1, 0.1, 0.01)),
+            AngularDamping(1.0),
+            SleepingDisabled,
+        ))
+        .id();
+    app.world_mut().spawn(
+        SphericalJoint::new(support, rod)
+            .with_local_anchor2(Vec3::NEG_Z * 0.5)
+            .with_swing_limits(0.0, 0.5),
+    );
+    let mut furthest: f32 = 0.0;
+    let mut steepest: f32 = 0.0;
+    for _ in 0..(4.0 / TIMESTEP) as usize {
+        app.update();
+        let at = app.world().get::<Position>(rod).unwrap().0;
+        let turn = app.world().get::<Rotation>(rod).unwrap().0;
+        let end = at.f32() + turn * (Vec3::NEG_Z * 0.5);
+        furthest = furthest.max(end.length());
+        steepest = steepest.max((turn * Vec3::Z).angle_between(Vec3::Z));
+    }
+    assert!(furthest < 0.005, "the anchors came {furthest} m apart");
+    assert!(
+        (0.4..0.55).contains(&steepest),
+        "the rod swung {steepest} rad against a limit of 0.5"
+    );
+}

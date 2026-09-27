@@ -22,10 +22,7 @@ impl Plugin for XpbdSolverPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<XpbdVelocityProjection>();
 
-        #[cfg(feature = "3d")]
-        app.register_required_components::<SphericalJoint, SphericalJointSolverData>();
         app.register_required_components::<PrismaticJoint, PrismaticJointSolverData>();
-        app.register_required_components::<DistanceJoint, DistanceJointSolverData>();
 
         // Configure scheduling.
         app.configure_sets(
@@ -43,12 +40,7 @@ impl Plugin for XpbdSolverPlugin {
         // Prepare joints before the substepping loop.
         app.add_systems(
             PhysicsSchedule,
-            (
-                #[cfg(feature = "3d")]
-                prepare_xpbd_joint::<SphericalJoint>,
-                prepare_xpbd_joint::<PrismaticJoint>,
-                prepare_xpbd_joint::<DistanceJoint>,
-            )
+            (prepare_xpbd_joint::<PrismaticJoint>,)
                 .chain()
                 .in_set(SolverSystems::PrepareJoints),
         );
@@ -68,13 +60,7 @@ impl Plugin for XpbdSolverPlugin {
         // Solve joints with XPBD.
         app.add_systems(
             SubstepSchedule,
-            (
-                store_pre_solve_deltas,
-                #[cfg(feature = "3d")]
-                solve_xpbd_joint::<SphericalJoint>,
-                solve_xpbd_joint::<PrismaticJoint>,
-                solve_xpbd_joint::<DistanceJoint>,
-            )
+            (store_pre_solve_deltas, solve_xpbd_joint::<PrismaticJoint>)
                 .chain()
                 .in_set(XpbdSolverSystems::SolveConstraints),
         );
@@ -90,12 +76,7 @@ impl Plugin for XpbdSolverPlugin {
         // Write back the forces applied by the XPBD joints.
         app.add_systems(
             PhysicsSchedule,
-            (
-                #[cfg(feature = "3d")]
-                writeback_joint_forces::<SphericalJoint>,
-                writeback_joint_forces::<PrismaticJoint>,
-                writeback_joint_forces::<DistanceJoint>,
-            )
+            (writeback_joint_forces::<PrismaticJoint>,)
                 .chain()
                 .in_set(SolverSystems::Finalize),
         );

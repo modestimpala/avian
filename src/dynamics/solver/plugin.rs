@@ -11,8 +11,9 @@ use crate::{
             },
             contact::ContactConstraint,
             impulse_joints::{
-                FixedJointImpulses, RevoluteJointImpulses, prepare_impulse_joints,
-                solve_impulse_joints, warm_start_impulse_joints, write_impulse_joint_forces,
+                DistanceJointImpulses, FixedJointImpulses, RevoluteJointImpulses,
+                prepare_impulse_joints, solve_impulse_joints, warm_start_impulse_joints,
+                write_impulse_joint_forces,
             },
             islands::{BodyIslandNode, IslandId, PhysicsIslands, WakeIslands},
             schedule::SubstepSolverSystems,
@@ -46,10 +47,10 @@ use core::cmp::Ordering;
 /// [Speculative collision](dynamics::ccd#speculative-collision) is used by default to prevent tunneling.
 /// Optional [sweep-based Continuous Collision Detection (CCD)](dynamics::ccd#swept-ccd) is handled by the [`CcdPlugin`].
 ///
-/// The [`FixedJoint`] and the [`RevoluteJoint`] are [solved with impulses](super::impulse_joints)
-/// in the same passes as contacts, so that friction answers the loads they carry. The other
-/// [joints](dynamics::joints) and user constraints are solved using
-/// [Extended Position-Based Dynamics (XPBD)](super::xpbd) if the `xpbd_joints` feature is enabled.
+/// [Joints](dynamics::joints) are [solved with impulses](super::impulse_joints) in the same
+/// passes as contacts, so that friction answers the loads they carry. The [`PrismaticJoint`]
+/// and user constraints are solved using [Extended Position-Based Dynamics (XPBD)](super::xpbd)
+/// if the `xpbd_joints` feature is enabled.
 ///
 /// ## Solver Bodies
 ///
@@ -83,7 +84,7 @@ use core::cmp::Ordering;
 /// just before the contacts in steps 2, 3 and 5 of the substepping loop.
 ///
 /// If the `xpbd_joints` feature is enabled, the [`XpbdSolverPlugin`] can also be added to solve
-/// the other joints using Extended Position-Based Dynamics (XPBD).
+/// the [`PrismaticJoint`] using Extended Position-Based Dynamics (XPBD).
 pub struct SolverPlugin {
     length_unit: f32,
 }
@@ -154,6 +155,9 @@ impl Plugin for SolverPlugin {
         // and report their forces once the bodies have been written back.
         app.register_required_components::<FixedJoint, FixedJointImpulses>();
         app.register_required_components::<RevoluteJoint, RevoluteJointImpulses>();
+        #[cfg(feature = "3d")]
+        app.register_required_components::<SphericalJoint, super::impulse_joints::SphericalJointImpulses>();
+        app.register_required_components::<DistanceJoint, DistanceJointImpulses>();
         let physics = app
             .get_schedule_mut(PhysicsSchedule)
             .expect("add PhysicsSchedule first");
@@ -161,6 +165,9 @@ impl Plugin for SolverPlugin {
             (
                 prepare_impulse_joints::<FixedJoint>,
                 prepare_impulse_joints::<RevoluteJoint>,
+                #[cfg(feature = "3d")]
+                prepare_impulse_joints::<SphericalJoint>,
+                prepare_impulse_joints::<DistanceJoint>,
             )
                 .chain()
                 .in_set(SolverSystems::PrepareJoints),
@@ -168,6 +175,9 @@ impl Plugin for SolverPlugin {
             (
                 write_impulse_joint_forces::<FixedJoint>,
                 write_impulse_joint_forces::<RevoluteJoint>,
+                #[cfg(feature = "3d")]
+                write_impulse_joint_forces::<SphericalJoint>,
+                write_impulse_joint_forces::<DistanceJoint>,
             )
                 .chain()
                 .ambiguous_with_all()
@@ -192,6 +202,9 @@ impl Plugin for SolverPlugin {
             (
                 warm_start_impulse_joints::<FixedJoint>,
                 warm_start_impulse_joints::<RevoluteJoint>,
+                #[cfg(feature = "3d")]
+                warm_start_impulse_joints::<SphericalJoint>,
+                warm_start_impulse_joints::<DistanceJoint>,
                 warm_start,
             )
                 .chain()
@@ -204,6 +217,9 @@ impl Plugin for SolverPlugin {
             (
                 solve_impulse_joints::<FixedJoint, true>,
                 solve_impulse_joints::<RevoluteJoint, true>,
+                #[cfg(feature = "3d")]
+                solve_impulse_joints::<SphericalJoint, true>,
+                solve_impulse_joints::<DistanceJoint, true>,
                 solve_contacts::<true>,
             )
                 .chain()
@@ -216,6 +232,9 @@ impl Plugin for SolverPlugin {
             (
                 solve_impulse_joints::<FixedJoint, false>,
                 solve_impulse_joints::<RevoluteJoint, false>,
+                #[cfg(feature = "3d")]
+                solve_impulse_joints::<SphericalJoint, false>,
+                solve_impulse_joints::<DistanceJoint, false>,
                 solve_contacts::<false>,
             )
                 .chain()

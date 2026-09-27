@@ -1,8 +1,8 @@
 //! Extended Position-Based Dynamics (XPBD) constraint functionality.
 //!
 //! XPBD is a simulation method that solves constraints at the position-level.
-//! Avian currently uses it for most [joints](dynamics::joints), while contacts, the
-//! [`FixedJoint`] and the [`RevoluteJoint`] use an
+//! Avian currently uses it for the [`PrismaticJoint`], while contacts and the other
+//! [joints](dynamics::joints) use an
 //! [impulse-based approach](dynamics::solver::impulse_joints).
 //!
 //! An XPBD constraint moves bodies after contacts and friction have been solved. A body
@@ -32,10 +32,12 @@
 //! Below are the currently implemented XPBD-based constraints.
 //!
 //! - [Joints](dynamics::joints)
-//!     - [`FixedJoint`] and [`RevoluteJoint`], implemented but not scheduled
-//!     - [`DistanceJoint`]
-#![cfg_attr(feature = "3d", doc = "    - [`SphericalJoint`]")]
 //!     - [`PrismaticJoint`]
+//!     - [`FixedJoint`], [`RevoluteJoint`] and [`DistanceJoint`], implemented but not scheduled
+#![cfg_attr(
+    feature = "3d",
+    doc = "    - [`SphericalJoint`], implemented but not scheduled"
+)]
 //!
 //! Avian's [`ContactConstraint`](dynamics::solver::contact::ContactConstraint)
 //! is impulse-based instead.

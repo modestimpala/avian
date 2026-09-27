@@ -2,7 +2,7 @@ use core::f32::consts::{PI, TAU};
 
 #[cfg(feature = "3d")]
 use super::solve2;
-use super::{ImpulseJoint, Pass, PointImpulses, turn};
+use super::{ImpulseJoint, Pass, PointImpulses, Turning, turn};
 use crate::{
     dynamics::{
         joints::MotorModel,
@@ -54,59 +54,24 @@ pub struct RevoluteJointImpulses {
 }
 
 /// The hinge, as the bodies stand within a substep.
-struct Hinge {
-    /// The axis, on the first body.
+fn hinge(
+    data: &RevoluteJointImpulses,
+    [body1, body2]: [&SolverBody; 2],
+    inertias: [&SolverBodyInertia; 2],
+) -> Turning {
+    #[cfg(feature = "2d")]
+    {
+        Turning::new(
+            data.rotation_difference + body1.delta_rotation.angle_to(body2.delta_rotation),
+            inertias,
+        )
+    }
     #[cfg(feature = "3d")]
-    axis: Vector,
-    /// The second body's angle about the axis from the first's.
-    angle: f32,
-    /// How fast an impulse about the axis turns the bodies apart: its inverse effective mass.
-    k: f32,
-}
-
-impl Hinge {
-    fn of(
-        data: &RevoluteJointImpulses,
-        [body1, body2]: [&SolverBody; 2],
-        [inertia1, inertia2]: [&SolverBodyInertia; 2],
-    ) -> Self {
-        let k = inertia1.effective_inv_angular_inertia() + inertia2.effective_inv_angular_inertia();
-        #[cfg(feature = "2d")]
-        {
-            Self {
-                angle: data.rotation_difference
-                    + body1.delta_rotation.angle_to(body2.delta_rotation),
-                k,
-            }
-        }
-        #[cfg(feature = "3d")]
-        {
-            let axis = body1.delta_rotation * data.a1;
-            let b1 = body1.delta_rotation * data.b1;
-            let b2 = body2.delta_rotation * data.b2;
-            Self {
-                axis,
-                angle: b1.cross(b2).dot(axis).atan2(b1.dot(b2)),
-                k: axis.dot(k * axis),
-            }
-        }
-    }
-
-    /// How fast the second body turns about the axis, past the first.
-    fn speed(&self, [body1, body2]: [&SolverBody; 2]) -> f32 {
-        let speed = body2.angular_velocity - body1.angular_velocity;
-        #[cfg(feature = "2d")]
-        return speed;
-        #[cfg(feature = "3d")]
-        return speed.dot(self.axis);
-    }
-
-    /// An impulse about the axis.
-    fn about(&self, impulse: f32) -> AngularVector {
-        #[cfg(feature = "2d")]
-        return impulse;
-        #[cfg(feature = "3d")]
-        return self.axis * impulse;
+    {
+        let axis = body1.delta_rotation * data.a1;
+        let b1 = body1.delta_rotation * data.b1;
+        let b2 = body2.delta_rotation * data.b2;
+        Turning::new(axis, b1.cross(b2).dot(axis).atan2(b1.dot(b2)), inertias)
     }
 }
 
@@ -163,7 +128,7 @@ impl ImpulseJoint for RevoluteJoint {
         data.upper_impulse *= coefficient;
         data.motor_impulse *= coefficient;
 
-        let hinge = Hinge::of(data, [&*body1, &*body2], inertias);
+        let hinge = hinge(data, [&*body1, &*body2], inertias);
         let about = data.motor_impulse + data.lower_impulse - data.upper_impulse;
         #[cfg(feature = "2d")]
         let angular = hinge.about(about);
@@ -202,7 +167,7 @@ impl ImpulseJoint for RevoluteJoint {
         if !pass.use_bias {
             // The substep's impulses are settled.
             data.point.settle();
-            let hinge = Hinge::of(data, [&*body1, &*body2], inertias);
+            let hinge = hinge(data, [&*body1, &*body2], inertias);
             let about = data.motor_impulse + data.lower_impulse - data.upper_impulse;
             data.total_motor_impulse += data.motor_impulse;
             #[cfg(feature = "2d")]
@@ -275,51 +240,15 @@ impl RevoluteJoint {
         let Some(limit) = self.angle_limit else {
             return;
         };
-        let hinge = Hinge::of(data, [&*body1, &*body2], inertias);
-        if hinge.k <= f32::EPSILON {
-            return;
-        }
-        // A limit's impulse only pushes the angle back in: `room` is how far within it
-        // the angle is, and `closing` how fast the room grows.
-        let step = |room: f32, closing: f32, given: f32| {
-            let impulse = if room > 0.0 {
-                // Not there yet: stop only what would pass the limit within the substep.
-                -(closing + room / pass.delta_secs) / hinge.k
-            } else {
-                pass.step(
-                    |give, rhs| rhs / (hinge.k + give),
-                    self.limit_compliance,
-                    closing,
-                    room,
-                    given,
-                )
-            };
-            (given + impulse).max(0.0)
-        };
-
-        let lower = step(
-            hinge.angle - limit.min,
-            hinge.speed([&*body1, &*body2]),
-            data.lower_impulse,
-        );
-        turn(
-            [&mut *body1, &mut *body2],
-            inertias,
-            hinge.about(lower - data.lower_impulse),
-        );
-        data.lower_impulse = lower;
-
-        let upper = step(
-            limit.max - hinge.angle,
-            -hinge.speed([&*body1, &*body2]),
-            data.upper_impulse,
-        );
-        turn(
+        hinge(data, [&*body1, &*body2], inertias).limit(
             [body1, body2],
             inertias,
-            hinge.about(data.upper_impulse - upper),
+            limit,
+            self.limit_compliance,
+            &mut data.lower_impulse,
+            &mut data.upper_impulse,
+            pass,
         );
-        data.upper_impulse = upper;
     }
 
     /// Drives the angle and its speed towards the motor's targets.
@@ -334,7 +263,7 @@ impl RevoluteJoint {
         if !motor.enabled {
             return;
         }
-        let hinge = Hinge::of(data, [&*body1, &*body2], inertias);
+        let hinge = hinge(data, [&*body1, &*body2], inertias);
         if hinge.k <= f32::EPSILON {
             return;
         }
