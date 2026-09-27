@@ -193,6 +193,77 @@ pub trait AngularConstraint {
         delta_lagrange * axis
     }
 
+    /// Applies an angular correction that aligns the orientation of the bodies, solving
+    /// all three rotational directions together.
+    ///
+    /// [`align_orientation`](AngularConstraint::align_orientation) solves along the error's
+    /// own direction alone. With anisotropic inertia, the relative rotation that produces
+    /// is not parallel to the error, so part of each correction lands on directions the
+    /// constraint leaves free, such as a hinge's axis, where nothing restores it. Solving
+    /// with the bodies' combined inverse inertia tensor instead makes the relative
+    /// correction exactly the error.
+    ///
+    /// Returns the Lagrange multiplier update, as the [`align_orientation`] one does.
+    ///
+    /// [`align_orientation`]: AngularConstraint::align_orientation
+    #[cfg(feature = "3d")]
+    fn align_orientation_coupled(
+        &self,
+        body1: &mut SolverBody,
+        body2: &mut SolverBody,
+        inv_angular_inertia1: SymmetricTensor,
+        inv_angular_inertia2: SymmetricTensor,
+        rotation_difference: Vec3,
+        compliance: f32,
+        dt: f32,
+    ) -> Vec3 {
+        if rotation_difference.length_squared() <= f32::EPSILON * f32::EPSILON {
+            return Vec3::ZERO;
+        }
+
+        self.align_orientation_anisotropic(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            rotation_difference,
+            SymmetricTensor::from_diagonal(Vec3::splat(compliance)),
+            dt,
+        )
+    }
+
+    /// Like [`align_orientation_coupled`](AngularConstraint::align_orientation_coupled),
+    /// with a compliance for each direction of rotation in the world (rad / (N * m)).
+    #[cfg(feature = "3d")]
+    fn align_orientation_anisotropic(
+        &self,
+        body1: &mut SolverBody,
+        body2: &mut SolverBody,
+        inv_angular_inertia1: SymmetricTensor,
+        inv_angular_inertia2: SymmetricTensor,
+        rotation_difference: Vec3,
+        compliance: SymmetricTensor,
+        dt: f32,
+    ) -> Vec3 {
+        if rotation_difference.length_squared() <= f32::EPSILON * f32::EPSILON {
+            return Vec3::ZERO;
+        }
+
+        // tilde_a = a/h^2
+        let effective = inv_angular_inertia1 + inv_angular_inertia2 + compliance / (dt * dt);
+        let impulse = effective.inverse_or_zero() * rotation_difference;
+
+        self.apply_angular_impulse(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            impulse,
+        );
+
+        -impulse
+    }
+
     /// Applies angular constraints for interactions between two bodies.
     ///
     /// Here in 2D, `axis` is a unit vector with the Z coordinate set to 1 or -1. It controls if the body should rotate counterclockwise or clockwise.

@@ -47,6 +47,12 @@ pub struct FixedJoint {
     pub point_compliance: f32,
     /// The compliance of the angular constraint (inverse of stiffness, N * m / rad).
     pub angle_compliance: f32,
+    /// The compliance of the angular constraint for each direction of rotation, in the
+    /// first body's joint basis (inverse of stiffness, rad / (N * m)). When set, it is used
+    /// instead of [`angle_compliance`](Self::angle_compliance), so that a joint can be much
+    /// stiffer against turning one way than another.
+    #[cfg(feature = "3d")]
+    pub angle_compliance_tensor: Option<SymmetricTensor>,
 }
 
 impl EntityConstraint<2> for FixedJoint {
@@ -66,6 +72,8 @@ impl FixedJoint {
             frame2: JointFrame::IDENTITY,
             point_compliance: 0.0,
             angle_compliance: 0.0,
+            #[cfg(feature = "3d")]
+            angle_compliance_tensor: None,
         }
     }
 

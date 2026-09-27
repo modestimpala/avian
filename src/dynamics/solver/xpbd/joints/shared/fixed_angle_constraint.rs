@@ -21,6 +21,10 @@ pub struct FixedAngleConstraintShared {
     pub rotation_difference: Quat,
     /// The total Lagrange multiplier across the whole time step.
     pub total_lagrange: AngularVector,
+    /// The compliance for each direction of rotation in the world, if it differs by
+    /// direction. Fixed for the step, from the first body's joint basis as prepared.
+    #[cfg(feature = "3d")]
+    pub compliance_tensor: Option<SymmetricTensor>,
 }
 
 impl XpbdConstraintSolverData for FixedAngleConstraintShared {
@@ -55,6 +59,21 @@ impl FixedAngleConstraintShared {
         }
     }
 
+    /// Sets the compliance for each direction of rotation, given in the first body's joint
+    /// basis, or `None` for the same compliance in every direction.
+    #[cfg(feature = "3d")]
+    pub fn prepare_compliance(
+        &mut self,
+        rotation1: Rot,
+        local_basis1: Rot,
+        compliance: Option<SymmetricTensor>,
+    ) {
+        self.compliance_tensor = compliance.map(|compliance| {
+            let basis = Mat3::from_quat(rotation1 * local_basis1);
+            SymmetricTensor::from_mat3_unchecked(basis * compliance.to_mat3() * basis.transpose())
+        });
+    }
+
     /// Solves the constraint for the given bodies.
     pub fn solve(
         &mut self,
@@ -78,6 +97,20 @@ impl FixedAngleConstraintShared {
         let difference = -2.0
             * (self.rotation_difference * body1.delta_rotation * body2.delta_rotation.inverse())
                 .xyz();
+
+        #[cfg(feature = "3d")]
+        if let Some(compliance) = self.compliance_tensor {
+            self.total_lagrange += self.align_orientation_anisotropic(
+                body1,
+                body2,
+                inv_inertia1,
+                inv_inertia2,
+                difference,
+                compliance,
+                dt,
+            );
+            return;
+        }
 
         // Align orientation
         self.total_lagrange += self.align_orientation(

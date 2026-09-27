@@ -68,6 +68,12 @@ impl XpbdConstraint<2> for FixedJoint {
             local_basis1,
             local_basis2,
         );
+        #[cfg(feature = "3d")]
+        solver_data.angle_constraint.prepare_compliance(
+            (*body1.rotation).into(),
+            local_basis1,
+            self.angle_compliance_tensor,
+        );
     }
 
     fn solve(

@@ -136,13 +136,12 @@ impl XpbdConstraint<2> for RevoluteJoint {
             let a2 = body2.delta_rotation * solver_data.a2;
             let difference = a1.cross(a2);
 
-            solver_data.total_align_lagrange += self.align_orientation(
+            solver_data.total_align_lagrange += self.align_orientation_coupled(
                 body1,
                 body2,
                 inv_angular_inertia1,
                 inv_angular_inertia2,
                 difference,
-                0.0,
                 self.align_compliance,
                 dt,
             );
