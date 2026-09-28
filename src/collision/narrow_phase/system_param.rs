@@ -397,6 +397,14 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
     {
         let length_unit = self.length_unit.0;
         let contact_tolerance = length_unit * self.config.contact_tolerance;
+        #[cfg(feature = "3d")]
+        let manifold_reduction_tolerance = length_unit * self.config.manifold_reduction_tolerance;
+        #[cfg(feature = "3d")]
+        let manifold_reduction_cos = if self.config.manifold_reduction_angle > 0.0 {
+            self.config.manifold_reduction_angle.cos()
+        } else {
+            1.0
+        };
         let recycle_distance = length_unit * self.config.recycle_distance;
         let recycle_distance_non_touching = recycle_distance.min(contact_tolerance);
         #[cfg(feature = "2d")]
@@ -879,6 +887,18 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                     !manifold.points.is_empty()
                 });
 
+                // Make one manifold of those that lie in one plane.
+                #[cfg(feature = "3d")]
+                let reduced = if contacts.manifolds.len() > 1 && manifold_reduction_cos < 1.0 {
+                    ContactManifold::reduce(
+                        &mut contacts.manifolds,
+                        manifold_reduction_cos,
+                        manifold_reduction_tolerance,
+                    )
+                } else {
+                    Vec::new()
+                };
+
                 // Check if the colliders are now touching.
                 let mut touching = !contacts.manifolds.is_empty();
 
@@ -893,17 +913,31 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
 
                 contacts.flags.set(ContactPairFlags::TOUCHING, touching);
 
-                // TODO: Manifold reduction
-
                 // TODO: This condition is pretty arbitrary, mainly to skip dense trimeshes.
                 //       If we let Parry handle contact matching, this wouldn't be needed.
                 if contacts.manifolds.len() <= 4 && self.config.match_contacts {
                     // TODO: Cache this?
                     let distance_threshold = 0.1 * self.length_unit.0;
 
-                    for manifold in contacts.manifolds.iter_mut() {
+                    #[cfg_attr(feature = "2d", allow(unused_variables))]
+                    for (index, manifold) in contacts.manifolds.iter_mut().enumerate() {
+                        #[cfg(feature = "3d")]
+                        if reduced.contains(&index) {
+                            continue;
+                        }
                         for previous_manifold in old_manifolds.iter() {
                             manifold.match_contacts(&previous_manifold.points, distance_threshold);
+                        }
+                    }
+                }
+
+                // What was made of several manifolds has no features to be known by.
+                #[cfg(feature = "3d")]
+                if self.config.match_contacts && touching {
+                    let distance_threshold = 0.1 * self.length_unit.0;
+                    for index in reduced {
+                        if let Some(manifold) = contacts.manifolds.get_mut(index) {
+                            manifold.match_contacts_by_place(&old_manifolds, distance_threshold);
                         }
                     }
                 }

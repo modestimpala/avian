@@ -217,6 +217,32 @@ pub struct NarrowPhaseConfig {
     ///
     /// Default: `true`
     pub match_contacts: bool,
+
+    /// The greatest angle (in radians) between the normals of two contact manifolds of the
+    /// same pair of colliders at which they can be made one manifold of at most 4 points,
+    /// if they lie in one plane as well (see [`manifold_reduction_tolerance`]).
+    ///
+    /// A collider of many parts, such as a height field, a triangle mesh or a compound,
+    /// gives a manifold for every part that is touched. A plank lying on level ground made
+    /// of triangles touches many of them the same way, and without reduction the solver
+    /// solves every one.
+    ///
+    /// Setting this to zero or less disables manifold reduction.
+    ///
+    /// Default: `0.05` (approximately 3 degrees)
+    ///
+    /// [`manifold_reduction_tolerance`]: Self::manifold_reduction_tolerance
+    #[cfg(feature = "3d")]
+    pub manifold_reduction_angle: f32,
+
+    /// How far from one plane, across the normal, the points of two contact manifolds
+    /// can lie on either body and the manifolds still be made one.
+    ///
+    /// This is implicitly scaled by the [`PhysicsLengthUnit`].
+    ///
+    /// Default: `0.002`
+    #[cfg(feature = "3d")]
+    pub manifold_reduction_tolerance: f32,
 }
 
 impl Default for NarrowPhaseConfig {
@@ -231,6 +257,10 @@ impl Default for NarrowPhaseConfig {
             #[cfg(feature = "3d")]
             recycle_angle: 0.175,
             match_contacts: true,
+            #[cfg(feature = "3d")]
+            manifold_reduction_angle: 0.05,
+            #[cfg(feature = "3d")]
+            manifold_reduction_tolerance: 0.002,
         }
     }
 }

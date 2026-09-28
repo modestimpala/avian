@@ -584,6 +584,302 @@ fn a_collider_given_to_another_body_touches_as_that_bodys() {
         tick_app(&mut app, 1.0 / 60.0);
     }
     let rests = app.world().get::<Transform>(second).unwrap().translation;
-    assert!((rests.y - 0.25).abs() < 0.01, "the second body is at {rests}");
-    assert_eq!(app.world().get::<ColliderOf>(collider).unwrap().body, second);
+    assert!(
+        (rests.y - 0.25).abs() < 0.01,
+        "the second body is at {rests}"
+    );
+    assert_eq!(
+        app.world().get::<ColliderOf>(collider).unwrap().body,
+        second
+    );
+}
+
+/// Level ground made of triangles, 0.5 m to a cell, and a plank lying on it.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn plank_on_ground(heights: impl Fn(f32) -> f32, reduce: bool) -> (App, Entity) {
+    let mut app = create_app();
+    if !reduce {
+        app.world_mut()
+            .resource_mut::<NarrowPhaseConfig>()
+            .manifold_reduction_angle = 0.0;
+    }
+    // Rows run along x and columns along z: the ground's height varies across the plank.
+    let ground: Vec<Vec<Real>> = (0..=20)
+        .map(|_| (0..=20).map(|z| heights((z - 10) as f32 * 0.5)).collect())
+        .collect();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::heightfield(ground, Vec3::new(10.0, 1.0, 10.0)),
+        Transform::default(),
+    ));
+    let plank = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(5.4, 0.05, 0.26),
+            Mass(30.0),
+            Transform::from_xyz(0.13, 0.025 + heights(0.0), 0.0),
+            SleepingDisabled,
+        ))
+        .id();
+    for _ in 0..120 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    (app, plank)
+}
+
+/// How many manifolds and points a body touches with, and what it presses with, N.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn touching(app: &App, body: Entity) -> (usize, usize, f32) {
+    let step = app
+        .world()
+        .resource::<Time<Fixed>>()
+        .timestep()
+        .as_secs_f32();
+    let manifolds: Vec<&ContactManifold> = app
+        .world()
+        .resource::<ContactGraph>()
+        .contact_pairs_with(body)
+        .flat_map(|pair| &pair.manifolds)
+        .collect();
+    (
+        manifolds.len(),
+        manifolds.iter().map(|manifold| manifold.points.len()).sum(),
+        manifolds
+            .iter()
+            .map(|manifold| manifold.total_normal_impulse())
+            .sum::<f32>()
+            / step,
+    )
+}
+
+/// A plank on level ground made of triangles lies on every triangle under it the same
+/// way. It touches the ground with one manifold of four points, not one for each triangle,
+/// and lies as still and presses as hard as it did with them all.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_plank_on_level_ground_of_triangles_touches_it_once() {
+    let weight = 30.0 * 9.81;
+    let (app, plank) = plank_on_ground(|_| 0.0, false);
+    let (manifolds, _, pressed) = touching(&app, plank);
+    assert!(manifolds > 10, "{manifolds} manifolds with none made one");
+    assert!((pressed - weight).abs() < 0.02 * weight, "{pressed} N");
+
+    let (app, plank) = plank_on_ground(|_| 0.0, true);
+    let (manifolds, points, pressed) = touching(&app, plank);
+    assert_eq!((manifolds, points), (1, 4));
+    assert!((pressed - weight).abs() < 0.02 * weight, "{pressed} N");
+    let lies = app.world().get::<Transform>(plank).unwrap();
+    assert!(
+        (lies.translation - Vec3::new(0.13, 0.025, 0.0)).length() < 0.002,
+        "{}",
+        lies.translation
+    );
+    assert!(lies.rotation.angle_between(Quat::IDENTITY) < 0.002);
+    let moving = app.world().get::<LinearVelocity>(plank).unwrap();
+    assert!(moving.length() < 0.002, "moving at {}", moving.0);
+}
+
+/// A plank in a trough lies on both its sides, which face different ways: the manifolds
+/// of one side are made one, and those of the two sides are not.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_plank_in_a_trough_touches_each_side_of_it() {
+    let (app, plank) = plank_on_ground(|across| across.abs() * 0.4, true);
+    let (manifolds, points, pressed) = touching(&app, plank);
+    let faces: Vec<(Vec3, Vec<(Vec3, f32)>)> = app
+        .world()
+        .resource::<ContactGraph>()
+        .contact_pairs_with(plank)
+        .flat_map(|pair| &pair.manifolds)
+        .map(|manifold| {
+            (
+                manifold.normal,
+                manifold
+                    .points
+                    .iter()
+                    .map(|point| (point.anchor1, point.penetration))
+                    .collect(),
+            )
+        })
+        .collect();
+    // One manifold of four points for each side, facing as the side does; and no more
+    // than the plank's ends add, which bear nothing.
+    let sides: Vec<f32> = faces
+        .iter()
+        .filter(|(_, points)| points.iter().any(|(_, penetration)| *penetration > -0.005))
+        .map(|(normal, _)| normal.z)
+        .collect();
+    assert_eq!(sides.len(), 2, "{points} points: {faces:?}");
+    assert!(sides[0] * sides[1] < -0.1, "{faces:?}");
+    assert!(manifolds <= 4 && points <= 12, "{points} points: {faces:?}");
+    // The sides bear the weight between them, by pressing and by friction.
+    let weight = 30.0 * 9.81;
+    assert!(
+        pressed > 0.8 * weight && pressed < 1.1 * weight,
+        "{pressed} N"
+    );
+    let moving = app.world().get::<LinearVelocity>(plank).unwrap();
+    assert!(moving.length() < 0.005, "moving at {}", moving.0);
+}
+
+/// Manifolds that lie in one plane are made one, of the four points that span the most.
+/// Manifolds that face the same way from another level, or another way, are left.
+#[test]
+#[cfg(feature = "3d")]
+fn manifolds_in_one_plane_are_made_one() {
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    let at = |(x, z): (f32, f32), reach: f32, level: f32| {
+        let on_first = Vec3::new(x * reach, level, z * reach);
+        let on_second = on_first - Vec3::Y * 0.001;
+        ContactPoint::new(on_first, on_second, on_first.into(), 0.001)
+    };
+    let mut manifolds = vec![
+        ContactManifold::new(corners.map(|corner| at(corner, 0.5, 0.0)), Vec3::Y),
+        ContactManifold::new(corners.map(|corner| at(corner, 3.0, 0.001)), Vec3::Y),
+        ContactManifold::new(
+            corners.map(|corner| at(corner, 1.5, -0.001)),
+            Vec3::new(0.0003, 1.0, 0.0).normalize(),
+        ),
+        ContactManifold::new(corners.map(|corner| at(corner, 4.0, 0.05)), Vec3::Y),
+        ContactManifold::new([at((0.0, 0.0), 1.0, 0.0)], Vec3::X),
+    ];
+    let made = ContactManifold::reduce(&mut manifolds, 0.05f32.cos(), 0.002);
+    assert_eq!(made, vec![0]);
+    assert_eq!(manifolds.len(), 3);
+    assert_eq!(manifolds[0].points.len(), 4);
+    for point in &manifolds[0].points {
+        assert!(
+            point.anchor1.x.abs() == 3.0 && point.anchor1.z.abs() == 3.0,
+            "kept a point at {}",
+            point.anchor1
+        );
+    }
+    let levels: Vec<f32> = manifolds[1..]
+        .iter()
+        .map(|manifold| manifold.points[0].anchor1.y)
+        .collect();
+    assert!(
+        levels.contains(&0.05) && levels.contains(&0.0),
+        "{levels:?}"
+    );
+}
+
+/// What is made of several manifolds is warm started from the points that were nearest.
+#[test]
+#[cfg(feature = "3d")]
+fn points_with_no_features_are_matched_by_the_nearest() {
+    let at = |x: f32, impulse: f32| {
+        let mut point = ContactPoint::new(
+            Vec3::new(x, 0.0, 0.0),
+            Vec3::new(x, -1.0, 0.0),
+            Vec3::new(x, 0.0, 0.0).into(),
+            0.0,
+        );
+        point.warm_start_normal_impulse = impulse;
+        point
+    };
+    let before = [
+        ContactManifold::new([at(0.0, 1.0), at(0.06, 2.0), at(0.5, 3.0)], Vec3::Y),
+        ContactManifold::new([at(0.052, 9.0)], Vec3::X),
+    ];
+    let mut now = ContactManifold::new([at(0.05, 0.0), at(0.49, 0.0), at(0.9, 0.0)], Vec3::Y);
+    now.match_contacts_by_place(&before, 0.1);
+    let impulses: Vec<f32> = now
+        .points
+        .iter()
+        .map(|point| point.warm_start_normal_impulse)
+        .collect();
+    assert_eq!(impulses, vec![2.0, 3.0, 0.0]);
+}
+
+/// A stone of several boxes on hummocked ground made of triangles, and how fast it still
+/// turns after some seconds, rad/s.
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn stone_on_hummocks(reduce: bool, seed: f32) -> (f32, f32, usize) {
+    let mut app = create_app();
+    app.insert_resource(SubstepCount(12));
+    if !reduce {
+        app.world_mut()
+            .resource_mut::<NarrowPhaseConfig>()
+            .manifold_reduction_angle = 0.0;
+    }
+    let ground: Vec<Vec<Real>> = (0..=20)
+        .map(|x| {
+            (0..=20)
+                .map(|z| {
+                    let (x, z) = (x as f32 * 0.5 + seed, z as f32 * 0.5 - seed);
+                    0.08 * (x * 1.9).sin() * (z * 2.3).cos() + 0.04 * (x * 4.1 + z * 3.3).sin()
+                })
+                .collect()
+        })
+        .collect();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::heightfield(ground, Vec3::new(10.0, 1.0, 10.0)),
+        Transform::default(),
+    ));
+    // A stone as a sculpted one is collided: boxes of voxels, laid in courses.
+    let mut boxes = Vec::new();
+    for (course, (across, along)) in [(0.30, 0.22), (0.36, 0.28), (0.34, 0.24), (0.24, 0.16)]
+        .into_iter()
+        .enumerate()
+    {
+        boxes.push((
+            Position::from(Vec3::new(
+                0.01 * course as f32,
+                0.05 * course as f32,
+                -0.01 * course as f32,
+            )),
+            Rotation::default(),
+            Collider::cuboid(across, 0.05, along),
+        ));
+    }
+    let stone = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::compound(boxes),
+            ColliderDensity(2600.0),
+            Friction::new(0.7),
+            Transform::from_xyz(0.2 + seed, 0.4, -0.3).with_rotation(Quat::from_euler(
+                EulerRot::YXZ,
+                0.4,
+                0.1,
+                -0.2,
+            )),
+        ))
+        .id();
+    let (mut turning, mut moving): (f32, f32) = (0.0, 0.0);
+    for step in 0..480 {
+        tick_app(&mut app, 1.0 / 60.0);
+        if step >= 360 {
+            if app.world().get::<Sleeping>(stone).is_some() {
+                continue;
+            }
+            turning = turning.max(app.world().get::<AngularVelocity>(stone).unwrap().length());
+            moving = moving.max(app.world().get::<LinearVelocity>(stone).unwrap().length());
+        }
+    }
+    let manifolds = app
+        .world()
+        .resource::<ContactGraph>()
+        .contact_pairs_with(stone)
+        .flat_map(|pair| &pair.manifolds)
+        .count();
+    (turning, moving, manifolds)
+}
+
+/// A stone on hummocked ground comes to rest, and sleeps.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_stone_on_hummocks_comes_to_rest() {
+    for seed in [0.0, 1.3, 3.6] {
+        let (turning, moving, manifolds) = stone_on_hummocks(true, seed);
+        assert!(manifolds > 0, "seed {seed}: the stone touches nothing");
+        assert!(
+            turning == 0.0 && moving == 0.0,
+            "seed {seed}: turning at {turning} rad/s and moving at {moving} m/s"
+        );
+    }
 }

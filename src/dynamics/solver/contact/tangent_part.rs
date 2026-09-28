@@ -32,6 +32,11 @@ pub struct ContactTangentPart {
     pub effective_inverse_mass: [f32; 3],
 }
 
+/// The least speed of sliding that friction is solved for, m/s. See
+/// [`ContactTangentPart::solve_impulse`].
+#[cfg(feature = "3d")]
+const SLIDES_AT_LEAST: f32 = 1e-17;
+
 impl ContactTangentPart {
     /// Generates a new [`ContactTangentPart`].
     pub fn generate(
@@ -209,8 +214,16 @@ impl ContactTangentPart {
             // Compute the relative velocity along the tangents.
             // Add the relative velocity along the surface to the total tangent speed.
             let relative_velocity = relative_velocity + surface_velocity;
-            let tangent_speed1 = relative_velocity.dot(tangent_directions[0]);
-            let tangent_speed2 = relative_velocity.dot(tangent_directions[1]);
+            let mut tangent_speed1 = relative_velocity.dot(tangent_directions[0]);
+            let mut tangent_speed2 = relative_velocity.dot(tangent_directions[1]);
+
+            // Bodies at rest slide at speeds that are next to nothing, and the squares
+            // of those are subnormal numbers, which cost a hundred times what others do.
+            // A speed the bodies would not slide an atom's breadth at in a year is none.
+            if tangent_speed1.abs().max(tangent_speed2.abs()) < SLIDES_AT_LEAST {
+                tangent_speed1 = 0.0;
+                tangent_speed2 = 0.0;
+            }
 
             // Solve the two tangent directions simultaneously.
             // Based on Rapier's two-body constraint.

@@ -504,6 +504,16 @@ impl ContactManifold {
     #[inline]
     #[cfg(feature = "3d")]
     pub fn prune_points(&mut self) {
+        self.prune_points_by(|point| point.penetration * point.penetration);
+    }
+
+    /// Prunes the contact points in the manifold to a maximum of 4 points, keeping those
+    /// that span the most and weigh the most. The `weight` of a point says how much it
+    /// matters that it is kept: [`prune_points`](Self::prune_points) weighs a point by its
+    /// penetration depth squared.
+    #[inline]
+    #[cfg(feature = "3d")]
+    pub fn prune_points_by(&mut self, weight: impl Fn(&ContactPoint) -> f32) {
         // Based on `PruneContactPoints` in Jolt by Jorrit Rouwe.
         // https://github.com/jrouwe/JoltPhysics/blob/f3dbdd2dadac4a5510391f103f264c0427d55c50/Jolt/Physics/Collision/ManifoldBetweenTwoFaces.cpp#L16
 
@@ -523,7 +533,7 @@ impl ContactManifold {
             .map(|point| {
                 (
                     point.anchor1.reject_from_normalized(self.normal),
-                    (point.penetration * point.penetration).max(MIN_DISTANCE_SQUARED),
+                    weight(point).max(MIN_DISTANCE_SQUARED),
                 )
             })
             .unzip();
@@ -590,6 +600,114 @@ impl ContactManifold {
         if point4_index != usize::MAX {
             debug_assert_ne!(point3_index, point4_index);
             self.points.push(points[point4_index]);
+        }
+    }
+
+    /// Makes one manifold of the `manifolds` that lie in one plane, and keeps at most 4
+    /// points in each that was so made. Returns which of the manifolds left were so made.
+    ///
+    /// A shape of many parts, such as a height field, a triangle mesh or a compound, gives
+    /// a manifold for every part that is touched. Where the parts lie in one plane, as the
+    /// triangles of level ground under a plank do, those manifolds say the same thing many
+    /// times over, and the solver solves each of them.
+    ///
+    /// Two manifolds lie in one plane where their normals are within `facing_cos` of each
+    /// other (the cosine of the greatest angle between them), and the points of both, on
+    /// either body, are within `tolerance` of one plane across the normal. What is made
+    /// of them is what one face lying on another would have given, so nothing that bears
+    /// is lost: manifolds that face the same way from different levels, as the courses of
+    /// a stone lying on rough ground do, are left as they are.
+    #[cfg(feature = "3d")]
+    pub fn reduce(
+        manifolds: &mut Vec<ContactManifold>,
+        facing_cos: f32,
+        tolerance: f32,
+    ) -> Vec<usize> {
+        let mut made = Vec::new();
+        let mut first = 0;
+        while first + 1 < manifolds.len() {
+            let facing = manifolds[first].normal;
+            let Some((level1, level2)) = manifolds[first]
+                .points
+                .first()
+                .map(|point| (point.anchor1.dot(facing), point.anchor2.dot(facing)))
+            else {
+                first += 1;
+                continue;
+            };
+            let in_plane = |manifold: &ContactManifold| {
+                manifold.normal.dot(facing) >= facing_cos
+                    && manifold.points.iter().all(|point| {
+                        (point.anchor1.dot(facing) - level1).abs() <= tolerance
+                            && (point.anchor2.dot(facing) - level2).abs() <= tolerance
+                    })
+            };
+            if !in_plane(&manifolds[first]) {
+                first += 1;
+                continue;
+            }
+            let mut merged = false;
+            let mut other = first + 1;
+            while other < manifolds.len() {
+                if !in_plane(&manifolds[other]) {
+                    other += 1;
+                    continue;
+                }
+                let taken = manifolds.swap_remove(other);
+                manifolds[first].points.extend(taken.points);
+                merged = true;
+            }
+            if merged {
+                let manifold = &mut manifolds[first];
+                if manifold.points.len() > 4 {
+                    // They are as deep as each other: the ones that span the most.
+                    manifold.prune_points_by(|_| 1.0);
+                }
+                // The points are of several parts, and a feature of one part is named as
+                // the same feature of another: they are matched by where they are.
+                for point in &mut manifold.points {
+                    point.feature_id1 = PackedFeatureId::UNKNOWN;
+                    point.feature_id2 = PackedFeatureId::UNKNOWN;
+                }
+                made.push(first);
+            }
+            first += 1;
+        }
+        made
+    }
+
+    /// Copies impulses from the `previous` contacts to the contacts in `self`, each from
+    /// the one that was nearest it on both bodies and no further off than `distance`,
+    /// among the manifolds that faced as this one does.
+    ///
+    /// For manifolds made by [`reduce`](Self::reduce), whose points have no features to
+    /// be known by.
+    #[cfg(feature = "3d")]
+    pub fn match_contacts_by_place(&mut self, previous: &[ContactManifold], distance: f32) {
+        for contact in self.points.iter_mut() {
+            let mut nearest = distance * distance;
+            for manifold in previous {
+                if manifold.normal.dot(self.normal).abs() < 0.9 {
+                    continue;
+                }
+                for was in &manifold.points {
+                    // The colliders may be named the other way about than they were.
+                    let as_named = contact
+                        .anchor1
+                        .distance_squared(was.anchor1)
+                        .max(contact.anchor2.distance_squared(was.anchor2));
+                    let about = contact
+                        .anchor1
+                        .distance_squared(was.anchor2)
+                        .max(contact.anchor2.distance_squared(was.anchor1));
+                    let apart = as_named.min(about);
+                    if apart < nearest {
+                        nearest = apart;
+                        contact.warm_start_normal_impulse = was.warm_start_normal_impulse;
+                        contact.warm_start_tangent_impulse = was.warm_start_tangent_impulse;
+                    }
+                }
+            }
         }
     }
 
