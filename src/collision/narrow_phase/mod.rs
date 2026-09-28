@@ -130,6 +130,10 @@ where
             app.add_observer(remove_collider_on::<Add<(Disabled, ColliderDisabled)>>);
             app.add_observer(remove_collider_on::<Remove<ColliderMarker>>);
 
+            // A collider given to another body touches what it touches as that body's:
+            // its contacts are the old body's, and are made afresh.
+            app.add_observer(remove_collider_on::<Discard<ColliderOf>>);
+
             // Add colliders to the constraint graph when `Sensor` is removed,
             // and remove them when `Sensor` is added.
             // TODO: If we separate sensors from normal colliders, this won't be needed.

@@ -533,3 +533,57 @@ fn a_resting_body_presses_with_its_weight() {
         pressed / step
     );
 }
+
+/// A collider given to another body rests on the ground as that body's: the body it was
+/// taken from falls through nothing, and nothing panics over contacts that name it.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_collider_given_to_another_body_touches_as_that_bodys() {
+    let mut app = create_app();
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(10.0, 1.0, 10.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
+    ));
+    let first = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Mass(5.0),
+            Transform::from_xyz(0.0, 0.25, 0.0),
+            SleepingDisabled,
+        ))
+        .id();
+    let collider = app
+        .world_mut()
+        .spawn((
+            ChildOf(first),
+            Collider::cuboid(1.0, 0.5, 1.0),
+            Transform::IDENTITY,
+        ))
+        .id();
+    for _ in 0..30 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    assert!(app.world().get::<Transform>(first).unwrap().translation.y > 0.2);
+    // Another body takes the collider, where it is.
+    let second = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Mass(5.0),
+            Transform::from_xyz(0.5, 0.25, 0.0),
+            SleepingDisabled,
+        ))
+        .id();
+    app.world_mut()
+        .entity_mut(collider)
+        .insert((ChildOf(second), Transform::from_xyz(-0.5, 0.0, 0.0)));
+    app.world_mut().entity_mut(first).despawn();
+    for _ in 0..60 {
+        tick_app(&mut app, 1.0 / 60.0);
+    }
+    let rests = app.world().get::<Transform>(second).unwrap().translation;
+    assert!((rests.y - 0.25).abs() < 0.01, "the second body is at {rests}");
+    assert_eq!(app.world().get::<ColliderOf>(collider).unwrap().body, second);
+}
