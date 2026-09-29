@@ -676,11 +676,15 @@ pub struct SolverConfig {
     ///
     /// An iterative solver passes weight down through a body much lighter than what rests
     /// on it poorly: the light body is squeezed, the stack jitters and never sleeps. Where
-    /// two bodies' masses differ by more than this, the lighter one counts, in that contact
-    /// alone, as only this many times lighter. Its mass elsewhere is unchanged, and so is
-    /// the contact when the bodies meet faster than the
+    /// a body rests on one lighter than it by more than this, the lighter one counts, in
+    /// that contact alone, as only this many times lighter. Its mass elsewhere is unchanged,
+    /// and so is the contact when the bodies meet faster than the
     /// [`restitution_threshold`](Self::restitution_threshold): in an impact each takes its
     /// true share. Momentum between a resting pair is not conserved exactly.
+    ///
+    /// A light body that rests on a heavy one, or leans on it, counts as what it is: counted
+    /// as heavier it would press with the weight of a body that heavy. So does every body
+    /// where there is no [`Gravity`].
     ///
     /// Default: `f32::INFINITY` (no limit)
     pub max_mass_ratio: f32,
@@ -787,8 +791,11 @@ fn prepare_contact_constraints(
     contact_softness: Res<ContactSoftnessCoefficients>,
     solver_config: Res<SolverConfig>,
     length_unit: Res<PhysicsLengthUnit>,
+    gravity: Res<Gravity>,
 ) {
     let start = crate::utils::Instant::now();
+    // Which way is up: nowhere, where nothing has weight.
+    let up = -gravity.0.normalize_or_zero();
 
     for color in constraint_graph.colors.iter_mut() {
         // TODO: Instead of clearing the vector, we could resize it, and just overwrite the old values in the loop below.
@@ -866,6 +873,7 @@ fn prepare_contact_constraints(
                 &contact_softness,
                 solver_config.max_mass_ratio,
                 solver_config.restitution_threshold * length_unit.0,
+                up,
             );
 
             if !constraint.points.is_empty() {

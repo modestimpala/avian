@@ -70,9 +70,9 @@ pub struct ContactConstraint {
     /// and is considered to have infinite mass.
     pub relative_dominance: i16,
     /// How much of each body's inverse mass and inverse angular inertia the contact uses,
-    /// in `(0, 1]`: below one for the lighter of two dynamic bodies resting on one another
-    /// whose masses differ by more than [`SolverConfig::max_mass_ratio`], so it takes the
-    /// heavier one's weight as a body at most that many times lighter would.
+    /// in `(0, 1]`: below one for the lighter of two dynamic bodies where the heavier
+    /// rests on it and their masses differ by more than [`SolverConfig::max_mass_ratio`],
+    /// so it takes the heavier one's weight as a body at most that many times lighter would.
     pub inv_mass_scale1: f32,
     /// See [`ContactConstraint::inv_mass_scale1`].
     pub inv_mass_scale2: f32,
@@ -130,6 +130,7 @@ impl ContactConstraint {
         softness: &ContactSoftnessCoefficients,
         max_mass_ratio: f32,
         resting_speed: f32,
+        up: Vector,
     ) -> Self {
         // Compute the relative dominance of the bodies.
         let relative_dominance = inertia1.dominance() - inertia2.dominance();
@@ -140,7 +141,9 @@ impl ContactConstraint {
             .iter()
             .all(|point| point.normal_speed > -resting_speed);
         let (inv_mass_scale1, inv_mass_scale2) = if relative_dominance == 0 && resting {
-            inv_mass_scales(inertia1, inertia2, max_mass_ratio)
+            // How far the second body is over the first, of the way between them.
+            let over = manifold.normal.dot(up);
+            inv_mass_scales(inertia1, inertia2, max_mass_ratio, over)
         } else {
             (1.0, 1.0)
         };
@@ -481,15 +484,27 @@ impl ContactConstraint {
     }
 }
 
+/// How nearly over the lighter body the heavier one has to be for the lighter to count as
+/// heavier than it is, as the cosine of the angle between the way from the one to the
+/// other and straight up: over it at all, however it leans.
+const RESTS_ON: f32 = 0.0;
+
 /// The inverse mass scales for two dynamic bodies in contact: the lighter one's shrunk so
 /// that it counts as at most `max_mass_ratio` times lighter than the other, as a contact
 /// modification rather than a change to the body. An iterative solver passes a heavy body's
 /// weight down through a much lighter one poorly: a log resting on a twig jitters and never
 /// sleeps. Momentum between the pair is no longer conserved exactly in such a contact.
+///
+/// Only where the heavier body rests on the lighter: `over` is how far the second body is
+/// over the first, as the cosine of the angle between the contact's normal and straight
+/// up. A light body that rests on a heavy one, or leans on it, is what the solver has no
+/// trouble with, and counted as heavier it would press on what it rests on with the weight
+/// of a body that heavy: a twig on a slab with a fifth of the slab's weight.
 fn inv_mass_scales(
     inertia1: &SolverBodyInertia,
     inertia2: &SolverBodyInertia,
     max_mass_ratio: f32,
+    over: f32,
 ) -> (f32, f32) {
     if !max_mass_ratio.is_finite() {
         return (1.0, 1.0);
@@ -500,9 +515,9 @@ fn inv_mass_scales(
         return (1.0, 1.0);
     }
     // The lighter body has the larger inverse mass.
-    if inv1 > inv2 * max_mass_ratio {
+    if inv1 > inv2 * max_mass_ratio && over > RESTS_ON {
         (inv2 * max_mass_ratio / inv1, 1.0)
-    } else if inv2 > inv1 * max_mass_ratio {
+    } else if inv2 > inv1 * max_mass_ratio && over < -RESTS_ON {
         (1.0, inv1 * max_mass_ratio / inv2)
     } else {
         (1.0, 1.0)

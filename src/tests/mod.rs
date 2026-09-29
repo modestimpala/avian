@@ -342,6 +342,86 @@ fn a_heavy_slab_on_light_rods_settles_with_the_mass_ratio_limited() {
     }
 }
 
+/// A light body resting on a heavy one presses on it with its own weight, with the mass
+/// ratio limited: counted as heavier than it is there, a twig would press on a slab with
+/// a fifth of the slab's weight.
+#[test]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
+fn a_twig_on_a_heavy_slab_presses_with_its_own_weight() {
+    let mut app = create_app();
+    app.insert_resource(crate::dynamics::solver::SolverConfig {
+        max_mass_ratio: 5.0,
+        ..default()
+    });
+    let ground = app
+        .world_mut()
+        .spawn((
+            RigidBody::Static,
+            Collider::cuboid(10.0, 1.0, 10.0),
+            Transform::from_xyz(0.0, -0.5, 0.0),
+        ))
+        .id();
+    // A slab of 360 kg on the ground, and a twig of a quarter of a kilogram on the slab.
+    let slab = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 0.3, 1.2),
+            Mass(360.0),
+            SleepingDisabled,
+            Transform::from_xyz(0.0, 0.15, 0.0),
+        ))
+        .id();
+    let twig = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(0.03, 0.03, 0.3),
+            Mass(0.25),
+            SleepingDisabled,
+            Transform::from_xyz(0.1, 0.316, 0.0),
+        ))
+        .id();
+    // What the second presses on the first with, N, as of the last step.
+    let pressed = |app: &App, first: Entity, second: Entity| -> f32 {
+        let graph = app.world().resource::<ContactGraph>();
+        let mut impulse = 0.0;
+        for pair in graph.iter_active() {
+            if [pair.body1, pair.body2] == [Some(first), Some(second)]
+                || [pair.body1, pair.body2] == [Some(second), Some(first)]
+            {
+                for manifold in &pair.manifolds {
+                    for point in &manifold.points {
+                        impulse += point.normal_impulse;
+                    }
+                }
+            }
+        }
+        impulse * 60.0
+    };
+    let (mut on_slab, mut on_ground, mut steps) = (0.0, 0.0, 0);
+    for step in 0..120 {
+        tick_app(&mut app, 1.0 / 60.0);
+        if step >= 60 {
+            on_slab += pressed(&app, slab, twig);
+            on_ground += pressed(&app, ground, slab);
+            steps += 1;
+        }
+    }
+    let (on_slab, on_ground) = (on_slab / steps as f32, on_ground / steps as f32);
+    let mass = |body: Entity| app.world().get::<ComputedMass>(body).unwrap().value();
+    let (twig, slab) = (mass(twig) * 9.81, mass(slab) * 9.81);
+    assert!(
+        (on_slab - twig).abs() < 0.2 * twig,
+        "a twig that weighs {twig} N presses on the slab with {on_slab} N"
+    );
+    assert!(
+        (on_ground - slab - twig).abs() < 0.1 * slab,
+        "a slab and a twig that weigh {} N press on the ground with {on_ground} N",
+        slab + twig
+    );
+}
+
 /// A log a fifth of a metre through laid across a slope of `slope` radians, touching over
 /// a patch of radius `patch`: how far down the slope it has gone after three seconds, m.
 #[cfg(all(feature = "3d", feature = "default-collider"))]
